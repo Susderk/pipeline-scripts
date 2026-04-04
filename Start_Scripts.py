@@ -96,9 +96,10 @@ def _trim_done_file(done_file: Path, max_age_days: int = 60) -> None:
 
 
 def cleanup_staging_isolation():
-    """Bereinigt Staging-Temp-Ordner nach erfolgreichem Lauf."""
+    """Bereinigt Staging-Temp-Ordner nach erfolgreichem Lauf und löscht Env-Variable."""
     staging_isolation = cfg.get("STAGING_ISOLATION", False)
     staging_temp_dir = cfg.get("STAGING_TEMP_DIR", None)
+    STAGING_TEMP_DIR_ENV = "PIPELINE_STAGING_TEMP_DIR"
 
     if staging_isolation and staging_temp_dir:
         try:
@@ -110,6 +111,10 @@ def cleanup_staging_isolation():
         except Exception as e:
             print(f"⚠️  STAGING-CLEANUP: Fehler beim Löschen von {staging_temp_dir}: {e}")
             print(f"   → Bitte manuell löschen oder später bereinigen.")
+        finally:
+            # Lösche Env-Variable, damit ein neuer Lauf einen frischen Ordner bekommt
+            if STAGING_TEMP_DIR_ENV in os.environ:
+                del os.environ[STAGING_TEMP_DIR_ENV]
 
 
 # === Registriere atexit-Handler für Staging-Cleanup (NACH Funktionsdefinition) ===

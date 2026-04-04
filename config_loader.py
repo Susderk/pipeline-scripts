@@ -74,17 +74,28 @@ def load_config():
     # === STAGING-ISOLATION: Isolierter Temp-Ordner für Staging-Läufe ===
     STAGING_ISOLATION = config.get("staging_isolation", False)
     STAGING_TEMP_DIR = None
-    if STAGING_ISOLATION:
-        staging_base = config.get("staging_temp_dir", None)
-        if staging_base:
-            STAGING_TEMP_DIR = Path(staging_base)
-        else:
-            # Fallback: Temp-Ordner im System
-            STAGING_TEMP_DIR = Path(tempfile.gettempdir()) / f"pipeline_staging_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    STAGING_TEMP_DIR_ENV = "PIPELINE_STAGING_TEMP_DIR"
 
-        # Erstelle Staging-Temp-Ordner
-        STAGING_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"🎭 STAGING-ISOLATION aktiv: {STAGING_TEMP_DIR}")
+    if STAGING_ISOLATION:
+        # Prüfe: Hat ein früherer Step bereits einen Staging-Temp-Ordner erstellt?
+        if os.environ.get(STAGING_TEMP_DIR_ENV):
+            # Ja → wiederverwenden (kein neuer Ordner, keine Print-Meldung)
+            STAGING_TEMP_DIR = Path(os.environ[STAGING_TEMP_DIR_ENV])
+        else:
+            # Nein → neuen Ordner erstellen und in Env-Variable speichern
+            staging_base = config.get("staging_temp_dir", None)
+            if staging_base:
+                STAGING_TEMP_DIR = Path(staging_base)
+            else:
+                # Fallback: Temp-Ordner im System
+                STAGING_TEMP_DIR = Path(tempfile.gettempdir()) / f"pipeline_staging_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+            # Erstelle Staging-Temp-Ordner
+            STAGING_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            # Speichere Pfad in Env-Variable für nachfolgende Steps
+            os.environ[STAGING_TEMP_DIR_ENV] = str(STAGING_TEMP_DIR)
+            # Print-Meldung nur beim ERSTEN Aufruf
+            print(f"🎭 STAGING-ISOLATION aktiv: {STAGING_TEMP_DIR}")
 
         # Leite IMAGES_PATH zu Staging-Ordner um
         IMAGES_PATH = STAGING_TEMP_DIR / "Generated pics"
