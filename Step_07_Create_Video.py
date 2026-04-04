@@ -39,6 +39,8 @@ PENDING_FILE = Path(cfg["PENDING_FILE"])
 IMAGES_PATH  = Path(cfg["IMAGES_PATH"])
 DATE_FORMAT  = cfg["DATE_FORMAT"]
 STATUSES     = cfg["STATUSES"]
+STAGING_ISOLATION = cfg["STAGING_ISOLATION"]
+remap_pending_entries_to_staging = cfg["remap_pending_entries_to_staging"]
 
 flags  = cfg["get_script_flags"]("video")
 DRYRUN = bool(flags.get("dry_run", False))
@@ -510,6 +512,10 @@ def main():
     try:
         with PENDING_FILE.open("r", encoding="utf-8") as f:
             pending = json.load(f)
+
+        # Im Staging-Modus: Pending-Einträge auf Staging-Temp-Ordner remappen
+        if STAGING_ISOLATION:
+            remap_pending_entries_to_staging(pending, IMAGES_PATH)
 
         renamed_status = STATUSES.get("renamed", "Renamed")
         video_status    = STATUSES.get("video_done", "Video Done")

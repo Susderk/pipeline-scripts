@@ -83,6 +83,13 @@ openai_chat_model: gpt-4o-mini
 # === STAGING: Fixture statt echte Datei ===
 pending_file: prompts_pending_fixture.json
 
+# === STAGING: Isolierter Temp-Ordner ===
+# staging_isolation: true  → aktiviert Isolation in einem separaten Temp-Ordner
+# Alle Steps schreiben in diesen isolierten Ordner, nicht in den Produktions-Ordner
+# Nach dem Test einfach Temp-Ordner löschen
+staging_isolation: true
+staging_temp_dir: null  # null = System-Temp verwenden, oder: "C:/Path/to/staging"
+
 poll_delay_sec: 2
 poll_initial_delay_sec: 8
 poll_max_attempts: 30
@@ -104,7 +111,6 @@ prompts_dir: prompts
 realesrgan_model: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
 realesrgan_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
 run_scripts:
-- prompts
 - csv
 - marketing
 - images

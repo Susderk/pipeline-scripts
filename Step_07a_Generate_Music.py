@@ -45,6 +45,8 @@ PENDING_FILE = Path(cfg["PENDING_FILE"])
 IMAGES_PATH  = Path(cfg["IMAGES_PATH"])
 DATE_FORMAT  = cfg["DATE_FORMAT"]
 STATUSES     = cfg["STATUSES"]
+STAGING_ISOLATION = cfg["STAGING_ISOLATION"]
+remap_pending_entries_to_staging = cfg["remap_pending_entries_to_staging"]
 
 flags  = cfg["get_script_flags"]("music")
 DRYRUN = bool(flags.get("dry_run", False))
@@ -74,7 +76,12 @@ def load_pending_json() -> list:
     try:
         with PENDING_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, list) else []
+            if isinstance(data, list):
+                # === STAGING-ISOLATION: Remap day_folder zu Staging-Temp-Ordner ===
+                if STAGING_ISOLATION:
+                    remap_pending_entries_to_staging(data, IMAGES_PATH)
+                return data
+            return []
     except Exception as e:
         print(f"   ⚠️ Fehler beim Laden von pending.json: {e}")
         return []

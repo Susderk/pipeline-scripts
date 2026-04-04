@@ -16,6 +16,7 @@ import re
 import csv
 import json
 import tempfile
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -69,6 +70,25 @@ def load_config():
     BASE_PATH   = Path(config.get("base_path", SCRIPT_PATH))
     IMAGES_PATH = Path(config.get("images_path", BASE_PATH / "images"))
     JSON_PATH   = BASE_PATH / config.get("json_dir", "JSON Dateien")
+
+    # === STAGING-ISOLATION: Isolierter Temp-Ordner für Staging-Läufe ===
+    STAGING_ISOLATION = config.get("staging_isolation", False)
+    STAGING_TEMP_DIR = None
+    if STAGING_ISOLATION:
+        staging_base = config.get("staging_temp_dir", None)
+        if staging_base:
+            STAGING_TEMP_DIR = Path(staging_base)
+        else:
+            # Fallback: Temp-Ordner im System
+            STAGING_TEMP_DIR = Path(tempfile.gettempdir()) / f"pipeline_staging_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        # Erstelle Staging-Temp-Ordner
+        STAGING_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"🎭 STAGING-ISOLATION aktiv: {STAGING_TEMP_DIR}")
+
+        # Leite IMAGES_PATH zu Staging-Ordner um
+        IMAGES_PATH = STAGING_TEMP_DIR / "Generated pics"
+        IMAGES_PATH.mkdir(parents=True, exist_ok=True)
 
     # Dateien – JSON Dateien/
     PENDING_FILE  = JSON_PATH / config.get("pending_file",        "prompts_pending.json")
@@ -149,7 +169,10 @@ def load_config():
         "DRY_RUN_SCRIPTS":       dry_run_scripts,
         "get_script_flags":      get_script_flags,
         "PRODUCT_TYPES":         product_types,
-        "get_active_product_types": get_active_product_types
+        "get_active_product_types": get_active_product_types,
+        "STAGING_ISOLATION":     STAGING_ISOLATION,
+        "STAGING_TEMP_DIR":      STAGING_TEMP_DIR,
+        "remap_pending_entries_to_staging": remap_pending_entries_to_staging
     }
 
 
@@ -185,3 +208,51 @@ def atomic_write_json(path, data) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     tmp.replace(path)
+
+
+def remap_pending_entries_to_staging(entries: list, staging_images_path: Path) -> None:
+    """
+    Schreibt 'day_folder' (und 'folder') in Pending-Einträgen vom Produktionspfad
+    zu Staging-Temp-Ordner um.
+
+    Wird aufgerufen, wenn staging_isolation: true ist.
+    Modifiziert die Einträge in-place.
+
+    Beispiel:
+    - Input:  "C:/Users/ingos/Digital Pictures Shops/Generated pics/2026/2026 April/2026-04-04"
+    - Output: "/tmp/pipeline_staging_YYYYMMDD_HHMMSS/Generated pics/2026/2026 April/2026-04-04"
+    """
+    if not entries or not isinstance(entries, list):
+        return
+
+    for entry in entries:
+        # day_folder umschreiben
+        if "day_folder" in entry and entry["day_folder"]:
+            old_day_folder = Path(entry["day_folder"])
+            # Extrahiere den relativen Pfad NACH "Generated pics"
+            try:
+                # Finde den Index von "Generated pics" im Pfad
+                parts = old_day_folder.parts
+                if "Generated pics" in parts:
+                    idx = parts.index("Generated pics")
+                    # relative_path = alles NACH "Generated pics"
+                    relative_path = Path(*parts[idx+1:])
+                    new_day_folder = staging_images_path / relative_path
+                    entry["day_folder"] = str(new_day_folder)
+            except (ValueError, IndexError):
+                # Fallback: Falls "Generated pics" nicht im Pfad, Warnung und nichts ändern
+                print(f"⚠️ remap_pending: 'Generated pics' nicht in Pfad gefunden: {old_day_folder} – Pfad bleibt unverändert")
+
+        # folder umschreiben (falls vorhanden)
+        if "folder" in entry and entry["folder"]:
+            old_folder = Path(entry["folder"])
+            try:
+                parts = old_folder.parts
+                if "Generated pics" in parts:
+                    idx = parts.index("Generated pics")
+                    relative_path = Path(*parts[idx+1:])
+                    new_folder = staging_images_path / relative_path
+                    entry["folder"] = str(new_folder)
+            except (ValueError, IndexError):
+                # Fallback: Falls "Generated pics" nicht im Pfad, Warnung und nichts ändern
+                print(f"⚠️ remap_pending: 'Generated pics' nicht in Pfad gefunden: {old_folder} – Pfad bleibt unverändert")

@@ -49,6 +49,42 @@ python Start_Scripts.py
 
 ---
 
+## Staging-Isolation — Dateisystem-Schutz
+
+**Problem:** Im Staging-Modus schrieben die Steps ursprünglich direkt in den Produktions-Tagesordner.
+
+**Lösung:** Staging-Isolation
+
+- **Automatisch aktiviert** in `config.staging.yaml` und `config.dev.yaml`
+- **Isolierter Temp-Ordner** wird bei Laufstart erstellt
+- **Alle Steps** schreiben in diesen isolierten Ordner statt in Produktion
+- **Nach Laufende** wird der Temp-Ordner automatisch gelöscht
+
+**Wie es funktioniert:**
+
+1. `config_loader.py` prüft `staging_isolation: true`
+2. Erstellt einen Temp-Ordner (z.B. `C:\Users\...\AppData\Local\Temp\pipeline_staging_20260404_120000`)
+3. Leitet `IMAGES_PATH` zu diesem Temp-Ordner um
+4. Alle nachfolgenden Steps (Step 03, 05, 07, 07a) schreiben nur hierhin
+5. Nach erfolgreicher Ausführung: Temp-Ordner automatisch gelöscht
+
+**Konfiguration:**
+
+```yaml
+# config.staging.yaml / config.dev.yaml
+staging_isolation: true
+staging_temp_dir: null        # null = System-Temp verwenden
+                              # oder: "C:/path/to/staging"
+```
+
+**Manuelle Cleanup (falls nötig):**
+
+Falls der Temp-Ordner manuell bereinigt werden muss:
+- Windows: `C:\Users\...\AppData\Local\Temp\pipeline_staging_*`
+- Linux: `/tmp/pipeline_staging_*`
+
+---
+
 ## Staging-Workflow — Schritt für Schritt
 
 ### 1. Test-Lauf starten
@@ -58,6 +94,8 @@ python Start_Scripts.py --staging
 ```
 
 Der Workflow läuft bis **Step 09** (Upscaling) und stoppt dann.
+
+**Info:** Staging-Isolation ist aktiviert – alle Dateisystem-Operationen schreiben in einen isolierten Temp-Ordner, nicht in den Produktions-Ordner.
 
 ### 2. Genehmigungsdatei erstellen (Approval Gate)
 
@@ -176,6 +214,19 @@ pip install pyyaml requests pillow moviepy transformers torch torchaudio
 
 ### "Bilder nicht gefunden"
 → Prüfe, dass `../Generated pics/2026/2026 April/2026-04-04/` existiert.
+
+---
+
+## Changelog
+
+### 2026-04-04 — Staging-Isolation implementiert
+- **Neue Feature:** Automatische Isolation von Staging-Läufen
+- `config_loader.py`: `staging_isolation` Flag unterstützen
+- `config.staging.yaml` / `config.dev.yaml`: Isolation aktiviert
+- `Start_Scripts.py`: Auto-Cleanup nach erfolgreichem Lauf
+- README.md: Dokumentation der Staging-Isolation
+- Fixture `prompts_pending_fixture.json` bleibt unverändert
+- **Effekt:** Staging-Läufe berühren Produktions-Tagesordner nicht mehr
 
 ---
 

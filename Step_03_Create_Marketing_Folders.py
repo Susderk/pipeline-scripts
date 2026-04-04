@@ -21,6 +21,9 @@ config = cfg["config"]
 
 PENDING_FILE = cfg["PENDING_FILE"]
 STATUSES     = cfg["STATUSES"]
+STAGING_ISOLATION = cfg["STAGING_ISOLATION"]
+STAGING_IMAGES_PATH = cfg["IMAGES_PATH"]
+remap_pending_entries_to_staging = cfg["remap_pending_entries_to_staging"]
 
 flags       = cfg["get_script_flags"]("marketing")
 RUN_ENABLED = bool(flags["run"])
@@ -53,6 +56,11 @@ def main():
     except Exception:
         print("❌ prompts_pending.json beschädigt.")
         sys.exit(1)
+
+    # === STAGING-ISOLATION: Remap day_folder zu Staging-Temp-Ordner ===
+    if STAGING_ISOLATION:
+        remap_pending_entries_to_staging(pending, STAGING_IMAGES_PATH)
+        print(f"🎭 Pending-Einträge zu Staging-Ordner remapped.")
 
     sim_status            = STATUSES.get("simulation",    "Simulation")
     csv_generated_status  = STATUSES.get("csv_generated", "CSV generated")

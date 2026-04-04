@@ -26,6 +26,8 @@ Workflow-Schritte:
 import os
 import sys
 import subprocess
+import shutil
+import atexit
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
@@ -42,7 +44,6 @@ if "--staging" in sys.argv:
 cfg = load_config()
 config = cfg["config"]
 SCRIPT_PATH = cfg["SCRIPT_PATH"]
-
 
 def run_script(name: str, command: str, use_shell: bool = False, required: bool = True):
     """Startet ein Teilskript.
@@ -94,8 +95,39 @@ def _trim_done_file(done_file: Path, max_age_days: int = 60) -> None:
         print(f"🗑️  done.json bereinigt: {removed} Einträge älter als {max_age_days} Tage entfernt ({len(kept)} behalten).")
 
 
+def cleanup_staging_isolation():
+    """Bereinigt Staging-Temp-Ordner nach erfolgreichem Lauf."""
+    staging_isolation = cfg.get("STAGING_ISOLATION", False)
+    staging_temp_dir = cfg.get("STAGING_TEMP_DIR", None)
+
+    if staging_isolation and staging_temp_dir:
+        try:
+            staging_temp_path = Path(staging_temp_dir)
+            if staging_temp_path.exists():
+                print(f"\n🧹 STAGING-CLEANUP: Lösche Temp-Ordner: {staging_temp_path}")
+                shutil.rmtree(staging_temp_path)
+                print(f"✅ Staging-Temp-Ordner erfolgreich gelöscht.")
+        except Exception as e:
+            print(f"⚠️  STAGING-CLEANUP: Fehler beim Löschen von {staging_temp_dir}: {e}")
+            print(f"   → Bitte manuell löschen oder später bereinigen.")
+
+
+# === Registriere atexit-Handler für Staging-Cleanup (NACH Funktionsdefinition) ===
+# Dieser Handler wird bei jedem Programmende aufgerufen (normal oder via sys.exit())
+atexit.register(cleanup_staging_isolation)
+
+
 def archive_and_clear_pending_if_enabled():
-    """Archiviert pending.json nach done.json und leert optional pending.json"""
+    """Archiviert pending.json nach done.json und leert optional pending.json
+    Im Staging-Modus (STAGING_ISOLATION) wird die Fixture-Datei NOT geleert."""
+
+    staging_isolation = cfg.get("STAGING_ISOLATION", False)
+
+    # Im Staging-Modus: Nur Log, keine Änderung der Fixture
+    if staging_isolation:
+        print("ℹ️ STAGING-Modus: Archivierung und Leerung übersprungen (Fixture unverändert).")
+        return
+
     pending_file = Path(cfg["PENDING_FILE"])
     done_file = Path(cfg.get("DONE_FILE", pending_file.parent / "prompts_done.json"))
 
@@ -249,6 +281,7 @@ def main():
     print()
     print("=" * 52)
     archive_and_clear_pending_if_enabled()
+    # cleanup_staging_isolation() wird via atexit automatisch aufgerufen
     print("=" * 52)
     print("🎯 Workflow erfolgreich abgeschlossen!")
     print("=" * 52)

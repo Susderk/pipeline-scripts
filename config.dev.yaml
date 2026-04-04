@@ -83,6 +83,10 @@ openai_chat_model: gpt-4o-mini
 # === DEV: Fixture statt echte Datei ===
 pending_file: prompts_pending_fixture.json
 
+# === DEV: Isolierter Temp-Ordner ===
+staging_isolation: true
+staging_temp_dir: null
+
 poll_delay_sec: 2
 poll_initial_delay_sec: 8
 poll_max_attempts: 30
@@ -103,11 +107,10 @@ prompt_count: 2
 prompt_provider: claude
 prompts_dir: prompts
 
-# === DEV: Alle Steps aktivieren ===
+# === DEV: Alle Steps AUSSER "prompts" aktivieren (Fixture bleibt unverändert) ===
 realesrgan_model: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
 realesrgan_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
 run_scripts:
-- prompts
 - csv
 - marketing
 - images

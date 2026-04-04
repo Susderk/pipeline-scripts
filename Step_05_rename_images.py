@@ -110,6 +110,9 @@ def main():
     flags_rename = cfg["get_script_flags"]("rename")
     RUN_ENABLED  = bool(flags_rename["run"])
     DRYRUN       = bool(flags_rename["dry_run"])
+    STAGING_ISOLATION = cfg["STAGING_ISOLATION"]
+    STAGING_IMAGES_PATH = cfg["IMAGES_PATH"]
+    remap_pending_entries_to_staging = cfg["remap_pending_entries_to_staging"]
 
     if not RUN_ENABLED:
         print("ℹ️ [rename] ist in run_scripts deaktiviert – nichts zu tun.")
@@ -133,6 +136,11 @@ def main():
     except Exception:
         print("❌ prompts_pending.json beschädigt.")
         sys.exit(1)
+
+    # === STAGING-ISOLATION: Remap day_folder zu Staging-Temp-Ordner ===
+    if STAGING_ISOLATION:
+        remap_pending_entries_to_staging(entries, STAGING_IMAGES_PATH)
+        print(f"🎭 Pending-Einträge zu Staging-Ordner remapped.")
 
     total_renamed = 0
     updated = False
