@@ -76,8 +76,8 @@ music_model: facebook/musicgen-small
 music_style_prefix: cinematic, atmospheric, ambient
 negative_lists_file: negative_lists.json
 negative_prompt: no text, no numbers, no logos, no watermarks, no realistic faces
-open_listings_excel: true
-open_platform_listings_excel: true
+open_listings_excel: false
+open_platform_listings_excel: false
 openai_chat_model: gpt-4o-mini
 
 # === STAGING: Fixture statt echte Datei ===

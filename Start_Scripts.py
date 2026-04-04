@@ -28,6 +28,7 @@ import sys
 import subprocess
 import shutil
 import atexit
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
@@ -44,6 +45,42 @@ if "--staging" in sys.argv:
 cfg = load_config()
 config = cfg["config"]
 SCRIPT_PATH = cfg["SCRIPT_PATH"]
+
+# === Fixture-Reset für Staging-Isolation ===
+def reset_fixture_for_staging():
+    """
+    Wenn STAGING_ISOLATION aktiv ist und eine Fixture verwendet wird:
+    - Erstelle eine Arbeitskopie der Original-Fixture im Staging-Temp-Ordner
+    - Setze PIPELINE_STAGING_PENDING_FILE Env-Variable
+    - So wird die Original-Fixture nicht überschrieben
+    """
+    staging_isolation = cfg.get("STAGING_ISOLATION", False)
+    staging_temp_dir = cfg.get("STAGING_TEMP_DIR", None)
+    pending_file_config = config.get("pending_file", "prompts_pending.json")
+
+    if not staging_isolation or "_fixture" not in pending_file_config:
+        return
+
+    try:
+        fixture_src = SCRIPT_PATH / "fixtures" / pending_file_config
+
+        if not fixture_src.exists():
+            print(f"⚠️  Fixture-Datei nicht gefunden: {fixture_src}")
+            return
+
+        # Erstelle Arbeitskopie im Staging-Temp-Ordner
+        staging_temp_path = Path(staging_temp_dir) if staging_temp_dir else Path(tempfile.gettempdir())
+        fixture_work = staging_temp_path / pending_file_config
+
+        # Kopiere Fixture
+        shutil.copy2(fixture_src, fixture_work)
+
+        # Setze Env-Variable für config_loader
+        os.environ["PIPELINE_STAGING_PENDING_FILE"] = str(fixture_work)
+
+        print(f"🔄 Fixture-Arbeitskopie erstellt: {fixture_work}")
+    except Exception as e:
+        print(f"⚠️  Fehler beim Erstellen der Fixture-Arbeitskopie: {e}")
 
 def run_script(name: str, command: str, use_shell: bool = False, required: bool = True):
     """Startet ein Teilskript.
@@ -187,6 +224,9 @@ def main():
     print("=" * 52)
     print("🚀 Starte Workflow mit zentralem Config-File")
     print("=" * 52)
+
+    # === Fixture-Reset für Staging durchführen ===
+    reset_fixture_for_staging()
 
     run_scripts = config.get("run_scripts", [])
 

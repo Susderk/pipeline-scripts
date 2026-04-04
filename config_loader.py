@@ -103,8 +103,14 @@ def load_config():
 
     # Dateien – JSON Dateien/ oder fixtures/ (wenn Staging-Fixture verwendet wird)
     pending_file_name = config.get("pending_file", "prompts_pending.json")
-    if "_fixture" in pending_file_name:
+
+    # Prüfe: Wurde von Start_Scripts.py eine Fixture-Arbeitskopie im Staging-Temp erstellt?
+    if os.environ.get("PIPELINE_STAGING_PENDING_FILE"):
+        # Ja → nutze Arbeitskopie (wird bei jedem Staging-Lauf frisch kopiert)
+        PENDING_FILE = Path(os.environ["PIPELINE_STAGING_PENDING_FILE"])
+    elif "_fixture" in pending_file_name:
         # Alle *_fixture.json Dateien liegen im fixtures/ Ordner im SCRIPT_PATH
+        # (wird nur verwendet, wenn PIPELINE_STAGING_PENDING_FILE nicht gesetzt)
         PENDING_FILE = SCRIPT_PATH / "fixtures" / pending_file_name
     else:
         # Standard: JSON Dateien/ Ordner
