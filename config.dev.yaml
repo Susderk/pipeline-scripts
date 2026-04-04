@@ -1,0 +1,165 @@
+# DEV-Config: Minimaler Batch, alle Steps simuliert.
+# Für schnelle lokale Tests ohne API-Calls.
+
+atta_prompt_file: atta_notion_pipeline_system_prompt.txt
+base_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript
+canva_mockup_design_ids:
+- DAHDkEN1iUo
+- DAHDkNb5G1c
+- DAHDkLMvqak
+- DAHDkKOjTVw
+- DAHDkFx-F7o
+chat_temperature: 0.3
+claude_chat_model: claude-haiku-4-5-20251001
+claude_model: claude-sonnet-4-6
+claude_model_csv: claude-haiku-4-5-20251001
+clear_pending: true
+config_file: config.dev.yaml
+counts_pattern: '{component}_counts.json'
+date_format: '%Y-%m-%d'
+done_max_age_days: 60
+
+# === DEV: Alle dry_run-Flags auf true (auch upscale und music) ===
+dry_run:
+  images: true       # Leonardo simulieren
+  youtube: true      # kein Upload
+  etsy: true         # kein Listing
+  meta: true         # kein Post
+  upscale: true      # RealESRGAN simulieren
+  music: true        # MusicGen simulieren
+  csv: true          # CSV-Generierung simulieren
+
+dry_run_global: false
+dummy_file_count: 2
+etsy_currency_code: EUR
+etsy_listing_state: draft
+etsy_max_tags: 13
+etsy_price: 3.99
+etsy_quantity: 999
+etsy_shop_id: ''
+etsy_taxonomy_id: 2078
+etsy_when_made: made_to_order
+etsy_who_made: i_did
+ffmpeg_path: ''
+github_branch: main
+github_mockup_folder: mockups
+github_repo: Susderk/mockup-uploads
+github_wallpaper_folder: wallpapers
+height: 704
+hook:
+  bar_opacity: 0.6
+  bar_padding_px: 15
+  font_name: Kristen ITC
+  font_size: 64
+  font_style: Bold
+  position: top
+  text_margin_px: 100
+hooks_file: hooks.json
+image_count: 10
+image_extensions:
+- .jpg
+- .jpeg
+images_path: C:/Users/ingos/Digital Pictures Shops/Generated pics
+json_dir: JSON Dateien
+knorko_prompt_file: knorko_pipeline_system_prompt.txt
+lists_file: lists.json
+log_file: log.jsonl
+logging_ein: false
+meta_post_times:
+- '12:00'
+- '18:00'
+meta_video_post_fb: true
+meta_video_post_ig: true
+model_id: b2614463-296c-462a-9586-aafdb8f00e36
+music_fallback_prompt: cinematic, atmospheric, ambient background music
+music_model: facebook/musicgen-small
+music_style_prefix: cinematic, atmospheric, ambient
+negative_lists_file: negative_lists.json
+negative_prompt: no text, no numbers, no logos, no watermarks, no realistic faces
+open_listings_excel: true
+open_platform_listings_excel: true
+openai_chat_model: gpt-4o-mini
+
+# === DEV: Fixture statt echte Datei ===
+pending_file: prompts_pending_fixture.json
+
+poll_delay_sec: 2
+poll_initial_delay_sec: 8
+poll_max_attempts: 30
+
+# === DEV: Minimaler Batch ===
+product_types:
+  notion_theme: 0
+  wallpaper: 1
+
+promo_texts:
+- '✨ Limited offer for the first 50 buyers only: Use code {code} at checkout and get
+  90% off – exclusively available on Payhip!'
+- 🎁 First 50 buyers get 90% off! Grab yours on Payhip with code {code} – only available
+  through Payhip!
+- '💥 Exclusive Payhip deal: First 50 buyers save 90% with code {code} at checkout
+  – don''t miss out!'
+prompt_count: 2
+prompt_provider: claude
+prompts_dir: prompts
+
+# === DEV: Alle Steps aktivieren ===
+realesrgan_model: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
+realesrgan_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
+run_scripts:
+- prompts
+- csv
+- marketing
+- images
+- rename
+- review
+- music
+- video
+- youtube
+- upscale
+- etsy
+- meta
+
+shop_cta: Buy here 👉 payhip.com/digipicshop | etsy.com/shop/digipicshopdesigns
+statuses:
+  all_done: All Done
+  csv_generated: CSV generated
+  etsy_listed: Etsy Listed
+  knorko_done: Notion Theme Done
+  marketing_done: Marketing Done
+  meta_posted: Meta Posted
+  music_done: Music Done
+  prompt_generated: Prompt Generated
+  renamed: Renamed
+  simulation: Simulation
+  upscaled: Upscaled
+  video_done: Video Done
+  youtube_done: YouTube Done
+themes_file: themes.json
+upscale_factor: 4
+video_crossfade_duration: 0.3
+video_duration_per_image: 1.3
+video_fps: 30
+video_height: 1920
+video_hook_keyword: -hook
+video_output_format: mp4
+video_width: 1080
+width: 1280
+youtube_add_shorts_tag: true
+youtube_base_tags:
+- AI Wallpaper
+- Desktop Background
+- 4K Wallpaper
+- Digital Art
+- AI Art
+- Aesthetic Wallpaper
+- Home Office Design
+- Wallpaper Design
+- Digital Wallpaper
+- AI Generated Art
+youtube_category_id: 24
+youtube_credentials_file: credentials.json
+youtube_language: en
+youtube_privacy: public
+youtube_schedule_time: '16:00'
+youtube_token_file: youtube_token.json

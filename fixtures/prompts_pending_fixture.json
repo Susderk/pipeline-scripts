@@ -1,0 +1,32 @@
+[
+  {
+    "id": "fixture-2026-04-04_001",
+    "timestamp": "2026-04-04T08:00:00",
+    "scenes": "Morning mountain landscape",
+    "styles": "photorealistic",
+    "palettes": "warm golden tones",
+    "atmospheres": "serene and peaceful",
+    "techniques": "digital painting",
+    "seams": "seamless",
+    "composition": "wide angle",
+    "prompt": "A serene morning mountain landscape in photorealistic style, warm golden tones, peaceful atmosphere, digital painting technique, seamless, wide angle composition",
+    "prompt_source": "fixture",
+    "status": "Prompt Generated",
+    "day_folder": "C:/Users/ingos/Digital Pictures Shops/Generated pics/2026/2026 April/2026-04-04"
+  },
+  {
+    "id": "fixture-2026-04-04_002",
+    "timestamp": "2026-04-04T08:15:00",
+    "scenes": "Retro family moments",
+    "styles": "vintage illustration",
+    "palettes": "warm nostalgic colors",
+    "atmospheres": "joyful and heartwarming",
+    "techniques": "retro design",
+    "seams": "seamless",
+    "composition": "portrait",
+    "prompt": "A vintage-style family scene with retro illustration aesthetic, warm nostalgic color palette, joyful and heartwarming atmosphere, retro design technique, seamless, portrait composition",
+    "prompt_source": "fixture",
+    "status": "Prompt Generated",
+    "day_folder": "C:/Users/ingos/Digital Pictures Shops/Generated pics/2026/2026 April/2026-04-04"
+  }
+]

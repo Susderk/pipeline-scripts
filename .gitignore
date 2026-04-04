@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+nppBackup/
+
+# Produktionsdaten — NIEMALS ins Repo committen
+../JSON Dateien/
+../Generated pics/
+../Claude Workspace/
+
+# Approval Gate
+.approval
+
+# Credentials und Secrets
+CREDENTIALS.md
+.env
+.env.local
+.secrets
+credentials.json
+youtube_token.json
+
+# Lokale Config-Überschreibungen
+*.local.yaml
+config.local.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+*.jsonl
