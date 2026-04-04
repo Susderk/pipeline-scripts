@@ -11,7 +11,9 @@
     "composition": "wide angle",
     "prompt": "A serene morning mountain landscape in photorealistic style, warm golden tones, peaceful atmosphere, digital painting technique, seamless, wide angle composition",
     "prompt_source": "fixture",
-    "status": "Prompt Generated"
+    "status": "CSV generated",
+    "marketing_title": "Golden Mountain",
+    "day_folder": "C:\\Users\\ingos\\Digital Pictures Shops\\Generated pics\\2026\\2026 April\\2026-04-04"
   },
   {
     "id": "fixture-2026-04-04_002",
@@ -25,6 +27,8 @@
     "composition": "portrait",
     "prompt": "A vintage-style family scene with retro illustration aesthetic, warm nostalgic color palette, joyful and heartwarming atmosphere, retro design technique, seamless, portrait composition",
     "prompt_source": "fixture",
-    "status": "Prompt Generated"
+    "status": "CSV generated",
+    "marketing_title": "Retro Moments",
+    "day_folder": "C:\\Users\\ingos\\Digital Pictures Shops\\Generated pics\\2026\\2026 April\\2026-04-04"
   }
 ]
