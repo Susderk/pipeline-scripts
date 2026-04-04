@@ -83,11 +83,8 @@ def main():
 
         day_folder = Path(entry.get("day_folder", ""))
         if not day_folder.exists():
-            print(f"❌ Tagesordner fehlt: {day_folder}")
-            print(f"   Status: {entry.get('status')}")
-            print(f"   Staging-Isolation: {STAGING_ISOLATION}")
-            print(f"   Bitte zuerst Step 02 (Marketing CSV) ausführen.")
-            sys.exit(1)
+            print(f"📁 Tagesordner wird erstellt: {day_folder}")
+            day_folder.mkdir(parents=True, exist_ok=True)
 
         folder_title  = entry.get("marketing_title", "Untitled")
         target_folder = day_folder / folder_title
