@@ -376,7 +376,15 @@ def main():
     else:
         print(f"⚠️  listings.csv nicht gefunden – Ordnernamen werden als Fallback verwendet")
 
-    # Alle <FolderName>/Mockups/*.mp4 sammeln
+    # --- DRY-RUN (vor der Dateiprüfung, damit kein abbruch bei fehlenden Videos) ---
+    if DRYRUN:
+        print("\n🧪 DRY-RUN – kein echter Upload.")
+        print("   (Dateiprüfung übersprungen – keine echten Videos nötig)")
+        print(f"\n{'='*52}")
+        print("🧪 DRY-RUN abgeschlossen.")
+        return
+
+    # Alle <FolderName>/Mockups/*.mp4 sammeln (nur im echten Modus nötig)
     mp4_jobs = []
     for folder_dir in sorted(d for d in day_folder.iterdir() if d.is_dir()):
         mockups_dir = folder_dir / "Mockups"
@@ -389,7 +397,7 @@ def main():
     if not mp4_jobs:
         print(f"❌ Keine .{VIDEO_FORMAT}-Videos in <FolderName>/Mockups/ gefunden.")
         print(f"   Pfad durchsucht: {day_folder}")
-        print("   Bitte zuerst Step 9 ausführen.")
+        print("   Bitte zuerst Step 07 (Video erstellen) ausführen.")
         sys.exit(1)
 
     print(f"\n🎬 {len(mp4_jobs)} Video(s) gefunden:")
@@ -403,22 +411,6 @@ def main():
         print(f"\n📆 Geplante Veröffentlichung: {publish_at} (UTC)")
     else:
         print(f"\n🔒 Sichtbarkeit: {PRIVACY}")
-
-    # --- DRY-RUN ---
-    if DRYRUN:
-        print("\n🧪 DRY-RUN – kein echter Upload.")
-        for folder_name, mp4_path in mp4_jobs:
-            row   = find_csv_row(folder_name, csv_rows)
-            title = build_title(row)
-            desc  = build_description(row)
-            tags  = build_tags(row)
-            print(f"\n   📹 {mp4_path.name}")
-            print(f"   Titel:       {title}")
-            print(f"   Tags:        {', '.join(tags[:5])}{'...' if len(tags) > 5 else ''}")
-            print(f"   Beschr.:     {desc[:80].replace(chr(10), ' ')}...")
-        print(f"\n{'='*52}")
-        print("🧪 DRY-RUN abgeschlossen.")
-        return
 
     # --- Authentifizieren ---
     print("\n🔑 YouTube-Authentifizierung...")
