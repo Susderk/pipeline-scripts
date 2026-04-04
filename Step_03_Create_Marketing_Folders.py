@@ -76,12 +76,17 @@ def main():
             processed += 1
             continue
 
+        # Im echten Lauf: Nur Einträge mit Status "CSV generated" verarbeiten
+        # (Step_02 hat diesen Status gesetzt + optional remapped, falls Staging aktiv)
         if entry.get("status") != csv_generated_status:
             continue
 
         day_folder = Path(entry.get("day_folder", ""))
         if not day_folder.exists():
             print(f"❌ Tagesordner fehlt: {day_folder}")
+            print(f"   Status: {entry.get('status')}")
+            print(f"   Staging-Isolation: {STAGING_ISOLATION}")
+            print(f"   Bitte zuerst Step 02 (Marketing CSV) ausführen.")
             sys.exit(1)
 
         folder_title  = entry.get("marketing_title", "Untitled")

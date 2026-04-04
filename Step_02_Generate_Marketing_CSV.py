@@ -48,6 +48,8 @@ DATE_FORMAT  = cfg["DATE_FORMAT"]
 TARGET_DATE  = cfg["TARGET_DATE"]
 STATUSES     = cfg["STATUSES"]
 LISTS_FILE   = cfg["LISTS_FILE"]
+STAGING_ISOLATION = cfg["STAGING_ISOLATION"]
+remap_pending_entries_to_staging = cfg["remap_pending_entries_to_staging"]
 
 # Marketing-Winkel aus lists.json laden
 try:
@@ -670,6 +672,12 @@ def main():
 
     # === PLATTFORM-LISTINGS GENERIEREN ===
     generate_platform_listings(listings_dicts, day_folder, dryrun=DRYRUN)
+
+    # === STAGING-ISOLATION: Remap day_folder/folder zu Staging-Temp-Ordner ===
+    # Dies ist WICHTIG: Nachfolgende Steps (03, 07a) müssen den korrekten Staging-Pfad sehen
+    if STAGING_ISOLATION and not DRYRUN:
+        remap_pending_entries_to_staging(pending, IMAGES_PATH)
+        print(f"🎭 Pending-Einträge zu Staging-Ordner remapped (nach CSV-Generierung).")
 
     try:
         atomic_write_json(PENDING_FILE, pending)

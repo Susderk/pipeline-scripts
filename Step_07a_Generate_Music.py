@@ -78,6 +78,11 @@ def load_pending_json() -> list:
             data = json.load(f)
             if isinstance(data, list):
                 # === STAGING-ISOLATION: Remap day_folder zu Staging-Temp-Ordner ===
+                # Hinweis: Option B (Remap + IMAGES_PATH-basiert)
+                # Der Remap ändert entry["day_folder"], aber main() rekonstruiert day_folder
+                # NEU aus IMAGES_PATH / year / month / date_str. Das ist bewusst:
+                # - IMAGES_PATH zeigt bereits auf Staging (config_loader.py)
+                # - Daher funktioniert die Rekonstruktion ohne entry["day_folder"] zu nutzen
                 if STAGING_ISOLATION:
                     remap_pending_entries_to_staging(data, IMAGES_PATH)
                 return data
@@ -182,6 +187,8 @@ def main():
     target_date = cfg["TARGET_DATE"]
     print(f"📅 Zieldatum: {target_date.strftime(DATE_FORMAT)}")
 
+    # WICHTIG: IMAGES_PATH ist bereits auf Staging umgeleitet, wenn staging_isolation aktiv ist
+    # (gemacht in config_loader.py bei Laden)
     year       = target_date.strftime("%Y")
     month_name = target_date.strftime("%B")
     date_str   = target_date.strftime(DATE_FORMAT)
@@ -189,6 +196,8 @@ def main():
 
     if not day_folder.exists():
         print(f"❌ Tagesordner nicht gefunden: {day_folder}")
+        print(f"   IMAGES_PATH: {IMAGES_PATH}")
+        print(f"   Staging-Isolation: {STAGING_ISOLATION}")
         print("   Bitte zuerst Step 03 (Marketing Ordner) ausführen.")
         sys.exit(1)
 

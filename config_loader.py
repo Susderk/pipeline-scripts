@@ -90,8 +90,15 @@ def load_config():
         IMAGES_PATH = STAGING_TEMP_DIR / "Generated pics"
         IMAGES_PATH.mkdir(parents=True, exist_ok=True)
 
-    # Dateien – JSON Dateien/
-    PENDING_FILE  = JSON_PATH / config.get("pending_file",        "prompts_pending.json")
+    # Dateien – JSON Dateien/ oder fixtures/ (wenn Staging-Fixture verwendet wird)
+    pending_file_name = config.get("pending_file", "prompts_pending.json")
+    if "_fixture" in pending_file_name:
+        # Alle *_fixture.json Dateien liegen im fixtures/ Ordner im SCRIPT_PATH
+        PENDING_FILE = SCRIPT_PATH / "fixtures" / pending_file_name
+    else:
+        # Standard: JSON Dateien/ Ordner
+        PENDING_FILE = JSON_PATH / pending_file_name
+
     LISTS_FILE    = JSON_PATH / config.get("lists_file",           "lists.json")
     NEGATIVE_FILE = JSON_PATH / config.get("negative_lists_file", "negative_lists.json")
     HOOKS_FILE    = JSON_PATH / config.get("hooks_file",           "hooks.json")
