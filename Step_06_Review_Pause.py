@@ -50,6 +50,22 @@ def main():
     TARGET_DATE = cfg["TARGET_DATE"]
     day_folder  = get_day_folder(IMAGES_PATH, DATE_FORMAT, TARGET_DATE)
 
+    # === STAGING-MODUS: Vereinfachte Sichtkontrolle ===
+    STAGING_ISOLATION = cfg.get("STAGING_ISOLATION", False)
+    if STAGING_ISOLATION:
+        print("\n" + "=" * 60)
+        print("🎭 STAGING-MODUS: Sichtkontrolle vereinfacht")
+        print("=" * 60)
+        print("   (keine Lock-Datei, Clipboard & ZIP-Import übersprungen)")
+        try:
+            input("\n⏳ Drücke ENTER um fortzufahren...")
+        except KeyboardInterrupt:
+            print("\n⚠️  Abgebrochen. Workflow gestoppt.")
+            sys.exit(1)
+        print("\n✅ Staging-Review bestätigt.")
+        print()
+        return
+
     lock_file = day_folder / "REVIEW_PENDING.lock"
 
     # === CLIPBOARD-ASSISTENT ===
