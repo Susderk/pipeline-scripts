@@ -4,7 +4,17 @@
 Step_08_Upload_YouTube.py
 
 Lädt die erstellten MP4-Videos (aus Step 07) als YouTube Shorts hoch.
-Liest Titel, Beschreibung und Tags aus listings.csv (aus Step 02).
+Liest Titel, Beschreibung und Tags aus master-listings.json (Single Source
+of Truth seit Refactor 2026-04). Matching: id-basiert via Item-Folder, kein
+Substring-Matching mehr.
+
+Schreibt nach erfolgreichem Upload:
+- master-listings.json item.youtube_url (SSoT)
+- payhip-listing.csv im Tagesordner (nur frisch hochgeladene Items),
+  inkl. youtube_url und leeren Spalten payhip_product_link / promo_code
+  fuer das nachfolgende Approval Gate
+- prompts_pending.json entry.youtube_url / .youtube_id (Uebergangs-Felder
+  bis Refactor-Punkt 9 bestaetigt, dass kein Reader sie braucht)
 
 Voraussetzungen:
   pip install google-api-python-client google-auth-oauthlib
@@ -27,7 +37,16 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-from config_loader import load_config, normalize_name, load_listings_csv, atomic_write_json, get_day_folder
+from config_loader import (
+    load_config,
+    atomic_write_json,
+    get_day_folder,
+    load_master_listings,
+    save_master_listings,
+)
+
+# Konstanter Disclosure-Text (an marketing_text in payhip-listing.csv angehaengt)
+PAYHIP_AI_DISCLOSURE = "AI-crafted with a human touch ✨"
 
 # Google API – mit verständlicher Fehlermeldung falls nicht installiert
 try:
@@ -89,18 +108,14 @@ def save_uploaded_yt(data: dict) -> None:
     atomic_write_json(UPLOADED_YT_FILE, data)
 
 
-def find_csv_row(folder_name: str, csv_rows: list[dict]) -> dict:
-    """Findet die beste CSV-Zeile für einen Folder-Namen via etsy_title-Vergleich."""
-    norm_folder = normalize_name(folder_name)
-    # Exakter Match zuerst
-    for row in csv_rows:
-        if normalize_name(row.get("etsy_title", "")) == norm_folder:
-            return row
-    # Teilstring-Match als Fallback
-    for row in csv_rows:
-        norm_title = normalize_name(row.get("etsy_title", ""))
-        if norm_folder in norm_title or norm_title in norm_folder:
-            return row
+def find_item_by_folder(items: list, folder_name: str) -> dict:
+    """Findet ein master-listings.json Item per Ordner-Basename (case-insensitive)."""
+    if not items or not folder_name:
+        return None
+    target = folder_name.strip().lower()
+    for it in items:
+        if (it.get("folder") or "").strip().lower() == target:
+            return it
     return None
 
 
@@ -170,46 +185,42 @@ def build_tags(row: dict) -> list:
     return tags[:500]
 
 
-def write_youtube_urls_to_csv(csv_path: Path, csv_rows: list, uploaded: list) -> None:
+def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
     """
-    Trägt die YouTube-Short-URLs in listings.csv ein (Spalte 'youtube_url').
-    Schreibt die Datei im gleichen Format zurück (Semikolon-getrennt, gequotet).
+    Schreibt payhip-listing.csv im Tagesordner — eine Zeile pro frisch
+    hochgeladenem master-Item. Spalten:
+      id, folder, title, youtube_url, marketing_text,
+      payhip_product_link (leer), promo_code (leer)
+    marketing_text = etsy_description_en + "\n\n" + AI-Disclosure.
+    payhip_product_link / promo_code traegt der User im Approval Gate ein.
     """
-    if not csv_rows or not uploaded:
+    if not items_for_payhip:
+        print("   ℹ️  Keine Items fuer payhip-listing.csv (keine erfolgreichen Uploads).")
         return
 
-    # Upload-Map: normalisierter Folder-Name → URL
-    url_map = {normalize_name(u["folder"]): u["url"] for u in uploaded}
+    csv_path = day_folder / "payhip-listing.csv"
+    fieldnames = ["id", "folder", "title", "youtube_url",
+                  "marketing_text", "payhip_product_link", "promo_code"]
 
-    # Spalte ergänzen falls noch nicht vorhanden
-    for row in csv_rows:
-        if "youtube_url" not in row:
-            row["youtube_url"] = ""
+    rows = []
+    for it in items_for_payhip:
+        etsy_title = (it.get("etsy_title") or "").strip()
+        title = f"Set of 5 {etsy_title} | 4K Wallpaper Digital Download" if etsy_title else ""
+        marketing_text = (it.get("etsy_description_en") or "").strip()
+        if marketing_text:
+            marketing_text = f"{marketing_text}\n\n{PAYHIP_AI_DISCLOSURE}"
+        else:
+            marketing_text = PAYHIP_AI_DISCLOSURE
+        rows.append({
+            "id":                  it.get("id", ""),
+            "folder":              it.get("folder", ""),
+            "title":               title,
+            "youtube_url":         it.get("youtube_url") or "",
+            "marketing_text":      marketing_text,
+            "payhip_product_link": "",
+            "promo_code":          "",
+        })
 
-    # Matching: etsy_title → URL eintragen
-    matched = 0
-    for row in csv_rows:
-        norm_title = normalize_name(row.get("etsy_title", ""))
-        # Exakter Match
-        if norm_title in url_map:
-            row["youtube_url"] = url_map[norm_title]
-            matched += 1
-            continue
-        # Teilstring-Match als Fallback
-        for norm_folder, url in url_map.items():
-            if norm_folder in norm_title or norm_title in norm_folder:
-                row["youtube_url"] = url
-                matched += 1
-                break
-
-    if matched == 0:
-        print("   ⚠️  Kein CSV-Match für YouTube-URL gefunden.")
-        return
-
-    # Spaltenreihenfolge: youtube_url ans Ende, alle anderen in Originalreihenfolge
-    fieldnames = [k for k in csv_rows[0].keys() if k != "youtube_url"] + ["youtube_url"]
-
-    # Atomar zurückschreiben
     tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
     try:
         with tmp.open("w", encoding="utf-8-sig", newline="") as f:
@@ -221,11 +232,11 @@ def write_youtube_urls_to_csv(csv_path: Path, csv_rows: list, uploaded: list) ->
                 quoting=csv.QUOTE_ALL,
             )
             writer.writeheader()
-            writer.writerows(csv_rows)
+            writer.writerows(rows)
         tmp.replace(csv_path)
-        print(f"   📋 listings.csv aktualisiert: {matched} URL(s) eingetragen.")
+        print(f"   🛒 payhip-listing.csv geschrieben ({len(rows)} Zeilen): {csv_path}")
     except Exception as e:
-        print(f"   ⚠️  listings.csv konnte nicht geschrieben werden: {e}")
+        print(f"   ❌ payhip-listing.csv konnte nicht geschrieben werden: {e}")
         tmp.unlink(missing_ok=True)
 
 
@@ -368,13 +379,13 @@ def main():
         print("   Bitte zuerst Step 9 ausführen.")
         sys.exit(1)
 
-    # listings.csv laden
-    csv_path = day_folder / "listings.csv"
-    csv_rows = load_listings_csv(csv_path)
-    if csv_rows:
-        print(f"📋 listings.csv geladen: {len(csv_rows)} Zeile(n)")
+    # master-listings.json laden (Single Source of Truth)
+    master = load_master_listings(day_folder)
+    master_items = master.get("items", [])
+    if master_items:
+        print(f"🗂️  master-listings.json geladen: {len(master_items)} Item(s)")
     else:
-        print(f"⚠️  listings.csv nicht gefunden – Ordnernamen werden als Fallback verwendet")
+        print(f"⚠️  master-listings.json leer/nicht gefunden – Ordnernamen werden als Fallback verwendet")
 
     # --- DRY-RUN (vor der Dateiprüfung, damit kein abbruch bei fehlenden Videos) ---
     if DRYRUN:
@@ -448,15 +459,15 @@ def main():
         size_mb = mp4_path.stat().st_size / 1024 / 1024
         print(f"📤 Lade hoch: {folder_name}  ({size_mb:.1f} MB)")
 
-        row = find_csv_row(folder_name, csv_rows)
-        if row:
-            print(f"   ✅ CSV-Match: '{row.get('etsy_title', '')}'")
+        item = find_item_by_folder(master_items, folder_name)
+        if item:
+            print(f"   ✅ Master-Match: id={item.get('id')} folder='{item.get('folder')}'")
         else:
-            print("   ⚠️  Kein CSV-Match – Ordnername als Fallback")
+            print("   ⚠️  Kein master-listings.json Match – Ordnername als Fallback")
 
-        title       = build_title(row)
-        description = build_description(row)
-        tags        = build_tags(row)
+        title       = build_title(item)
+        description = build_description(item)
+        tags        = build_tags(item)
 
         print(f"   📝 Titel: {title}")
 
@@ -466,7 +477,10 @@ def main():
             url = f"https://www.youtube.com/shorts/{video_id}"
             print(f"   ✅ Hochgeladen! Video-ID: {video_id}")
             print(f"   🔗 {url}")
-            uploaded.append({"folder": folder_name, "video_id": video_id, "url": url})
+            uploaded.append({"folder": folder_name, "video_id": video_id, "url": url, "item": item})
+            # SSoT: youtube_url direkt im Master-Item setzen (persistieren am Ende)
+            if item is not None:
+                item["youtube_url"] = url
             # Sofort nach erfolgreichem Upload persistieren
             yt_tracking[yt_key] = {"video_id": video_id, "url": url, "folder_name": folder_name, "day_folder": str(day_folder)}
             save_uploaded_yt(yt_tracking)
@@ -485,10 +499,19 @@ def main():
     if not uploaded:
         sys.exit(1)
 
-    # --- YouTube-URLs in listings.csv eintragen ---
-    if csv_rows:
-        print("\n📋 Trage YouTube-URLs in listings.csv ein...")
-        write_youtube_urls_to_csv(csv_path, csv_rows, uploaded)
+    # --- master-listings.json persistieren (youtube_url ist in den Items gesetzt) ---
+    items_with_url = [u["item"] for u in uploaded if u.get("item") is not None]
+    if items_with_url:
+        try:
+            save_master_listings(day_folder, master)
+            print(f"\n🗂️  master-listings.json aktualisiert: "
+                  f"{len(items_with_url)} youtube_url eingetragen.")
+        except Exception as e:
+            print(f"\n❌ master-listings.json konnte nicht geschrieben werden: {e}")
+
+    # --- payhip-listing.csv schreiben (nur frisch hochgeladene Items) ---
+    print("\n🛒 Erzeuge payhip-listing.csv...")
+    write_payhip_listing_csv(day_folder, items_with_url)
 
     # --- Status in pending.json aktualisieren ---
     if not PENDING_FILE.exists():

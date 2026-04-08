@@ -12,8 +12,6 @@ Zentrale Loader-Funktion:
 import sys
 import os
 import yaml   # PyYAML wird benötigt: pip install pyyaml
-import re
-import csv
 import json
 import tempfile
 import shutil
@@ -200,29 +198,82 @@ def load_config():
     }
 
 
-def normalize_name(name: str) -> str:
-    """Normalisiert einen String für Datei-/Ordner-Vergleiche (lowercase, nur a-z0-9)."""
-    return re.sub(r"[^a-z0-9]", "", name.lower())
+MASTER_LISTINGS_FILENAME = "master-listings.json"
+MASTER_LISTINGS_SCHEMA_VERSION = 1
 
 
-def load_listings_csv(path, exit_on_error: bool = False) -> list[dict]:
-    """Liest eine listings.csv (Semikolon-getrennt, UTF-8-BOM) und gibt eine Liste von Dicts zurück.
-    Bei exit_on_error=True wird das Programm bei Fehler beendet,
-    sonst wird [] zurückgegeben."""
+def master_listings_path(day_folder) -> Path:
+    """Pfad zu master-listings.json für einen Tagesordner."""
+    return Path(day_folder) / MASTER_LISTINGS_FILENAME
+
+
+def load_master_listings(day_folder, exit_on_error: bool = False) -> dict:
+    """
+    Lädt master-listings.json eines Tagesordners.
+    Gibt das vollständige Dict mit Schlüsseln 'schema_version', 'day_folder',
+    'run_date', 'items' zurück. Bei Fehler/fehlender Datei: leeres Skelett.
+    """
+    path = master_listings_path(day_folder)
     try:
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            return [{k: v.strip('"').strip() if v else "" for k, v in row.items()} for row in reader]
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "items" not in data:
+            print(f"❌ {path} hat kein gültiges Schema (dict mit 'items' erwartet).")
+            if exit_on_error:
+                sys.exit(1)
+            return _empty_master_listings(day_folder)
+        return data
     except FileNotFoundError:
-        print(f"⚠️  listings.csv nicht gefunden: {path}")
+        print(f"⚠️  master-listings.json nicht gefunden: {path}")
         if exit_on_error:
             sys.exit(1)
-        return []
+        return _empty_master_listings(day_folder)
     except Exception as e:
         print(f"❌ Fehler beim Lesen von {path}: {e}")
         if exit_on_error:
             sys.exit(1)
-        return []
+        return _empty_master_listings(day_folder)
+
+
+def _empty_master_listings(day_folder) -> dict:
+    return {
+        "schema_version": MASTER_LISTINGS_SCHEMA_VERSION,
+        "day_folder": str(day_folder),
+        "run_date": "",
+        "items": [],
+    }
+
+
+def save_master_listings(day_folder, data: dict) -> None:
+    """Schreibt master-listings.json atomar."""
+    path = master_listings_path(day_folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, data)
+
+
+def find_master_item(data: dict, item_id: str) -> dict | None:
+    """Sucht ein Item per id-Schlüssel. Gibt das dict (Referenz) oder None zurück."""
+    if not data or "items" not in data:
+        return None
+    for it in data["items"]:
+        if it.get("id") == item_id:
+            return it
+    return None
+
+
+def update_master_item(day_folder, item_id: str, updates: dict) -> bool:
+    """
+    Aktualisiert Felder eines einzelnen Items in master-listings.json
+    und persistiert die Datei. Gibt True bei Erfolg zurück.
+    """
+    data = load_master_listings(day_folder)
+    item = find_master_item(data, item_id)
+    if item is None:
+        print(f"⚠️  update_master_item: id '{item_id}' nicht gefunden.")
+        return False
+    item.update(updates)
+    save_master_listings(day_folder, data)
+    return True
 
 
 def atomic_write_json(path, data) -> None:

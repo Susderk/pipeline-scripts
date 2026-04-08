@@ -20,11 +20,10 @@ Sichtkontrolle durch den Nutzer:
 """
 
 import sys
-import csv
 import zipfile
 from pathlib import Path
 from datetime import date as _date
-from config_loader import load_config, get_day_folder
+from config_loader import load_config, get_day_folder, load_master_listings
 
 try:
     import pyperclip
@@ -69,12 +68,13 @@ def main():
     lock_file = day_folder / "REVIEW_PENDING.lock"
 
     # === CLIPBOARD-ASSISTENT ===
-    _listings_file = day_folder / "listings.csv"
+    # Liest aus master-listings.json (Single Source of Truth, seit Refactor 2026-04).
+    _master_file = day_folder / "master-listings.json"
     if not _CLIPBOARD_OK:
         print("\nℹ️  pyperclip nicht installiert – Clipboard-Assistent übersprungen.")
         print("   pip install pyperclip")
-    elif not _listings_file.exists():
-        print(f"\nℹ️  listings.csv nicht gefunden – Clipboard-Assistent übersprungen.")
+    elif not _master_file.exists():
+        print(f"\nℹ️  master-listings.json nicht gefunden – Clipboard-Assistent übersprungen.")
     else:
         _fields = [
             ("etsy_title",          "Etsy Titel (kurz)"),
@@ -90,10 +90,10 @@ def main():
             ("stock_tags",          "Stock Tags"),
         ]
         try:
-            with _listings_file.open("r", encoding="utf-8-sig", newline="") as f:
-                _rows = list(csv.DictReader(f))
+            _master = load_master_listings(day_folder)
+            _rows = _master.get("items", [])
         except Exception as e:
-            print(f"⚠️  listings.csv konnte nicht gelesen werden: {e}")
+            print(f"⚠️  master-listings.json konnte nicht gelesen werden: {e}")
             _rows = []
 
         if _rows:
@@ -105,9 +105,10 @@ def main():
             for _idx, _row in enumerate(_rows, 1):
                 if _done:
                     break
-                print(f"\n── Eintrag {_idx}/{len(_rows)}: {_row.get('etsy_title', '?')} ──")
+                _header = _row.get("marketing_title") or _row.get("folder") or _row.get("etsy_title", "?")
+                print(f"\n── Eintrag {_idx}/{len(_rows)}: {_header} ──")
                 for _key, _label in _fields:
-                    _value = _row.get(_key, "")
+                    _value = _row.get(_key) or ""
                     if not _value:
                         continue
                     _preview = _value[:60] + "…" if len(_value) > 60 else _value

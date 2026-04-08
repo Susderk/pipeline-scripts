@@ -27,7 +27,13 @@ import base64
 import time
 from pathlib import Path
 
-from config_loader import load_config, atomic_write_json
+from config_loader import (
+    load_config,
+    atomic_write_json,
+    load_master_listings,
+    save_master_listings,
+    find_master_item,
+)
 
 try:
     import requests as _requests
@@ -258,7 +264,12 @@ def phase3_github_upload(pending: list, upscaled_status: str, date_str: str) -> 
 
     total_wp = 0   # hochgeladene Wallpapers
     total_mk = 0   # hochgeladene Mockups
+    total_vid = 0  # hochgeladene Videos
     failed   = 0
+
+    # Sammelt master-listings.json Updates pro day_folder:
+    # { day_folder: [(entry_id, video_github_url), ...] }
+    master_updates: dict[Path, list[tuple[str, str]]] = {}
 
     for entry in entries:
         folder_path = entry.get("folder", "")
@@ -336,8 +347,70 @@ def phase3_github_upload(pending: list, upscaled_status: str, date_str: str) -> 
         if wp_ok > 0:
             entry["github_uploaded"] = True
 
+        # ── Video (.mp4) ─────────────────────────────────────────────────────
+        # Video lebt direkt im Listing-Subordner. Step_07 erzeugt genau eine
+        # mp4 pro Listing (safe_name.mp4). Idempotent über entry["video_github_url"].
+        if folder_path and not entry.get("video_github_url"):
+            listing_dir = Path(folder_path)
+            if listing_dir.exists():
+                video_files = sorted(
+                    f for f in listing_dir.iterdir()
+                    if f.is_file() and f.suffix.lower() == ".mp4"
+                )
+                if video_files:
+                    vid_file = video_files[0]
+                    if len(video_files) > 1:
+                        print(f"   ⚠️  Mehrere mp4 in {listing_dir.name} gefunden – "
+                              f"verwende {vid_file.name}.")
+                    gh_path    = f"{GITHUB_MK_FOLDER}/{date_str}/{folder_name}/{vid_file.name}"
+                    commit_msg = f"Video: {date_str}/{folder_name}/{vid_file.name}"
+                    print(f"   ⬆️  Video: {vid_file.name}")
+
+                    raw_url, _sha = _github_upload_file(gh_path, vid_file.read_bytes(), commit_msg)
+                    if raw_url:
+                        entry["video_github_url"] = raw_url
+                        total_vid += 1
+                        print(f"   ✅ {raw_url}")
+                        # master-listings.json Update vormerken
+                        entry_id = entry.get("id", "")
+                        if entry_id:
+                            day_folder = listing_dir.parent
+                            master_updates.setdefault(day_folder, []).append(
+                                (entry_id, raw_url)
+                            )
+                    else:
+                        failed += 1
+                    time.sleep(0.3)
+                else:
+                    print(f"   ℹ️  Keine .mp4 in {listing_dir.name} – Video-Upload uebersprungen.")
+        elif entry.get("video_github_url"):
+            print(f"   ⏭️  Video bereits hochgeladen: {entry['video_github_url']}")
+
+    # ── master-listings.json mit video_github_url updaten ────────────────────
+    for day_folder, updates in master_updates.items():
+        try:
+            master = load_master_listings(day_folder)
+            n_updated, n_missing = 0, 0
+            for entry_id, video_url in updates:
+                item = find_master_item(master, entry_id)
+                if item is None:
+                    n_missing += 1
+                    print(f"   ⚠️  master-Item id '{entry_id}' nicht gefunden in "
+                          f"{day_folder.name} – Video-URL nicht persistiert.")
+                    continue
+                item["video_github_url"] = video_url
+                n_updated += 1
+            if n_updated:
+                save_master_listings(day_folder, master)
+                print(f"   🗂️  master-listings.json ({day_folder.name}) aktualisiert: "
+                      f"{n_updated} video_github_url gesetzt.")
+            if n_missing:
+                print(f"   ⚠️  {n_missing} fehlende master-id(s) in {day_folder.name}.")
+        except Exception as e:
+            print(f"   ❌ master-listings.json Update fehlgeschlagen ({day_folder}): {e}")
+
     print(f"\n{'─'*44}")
-    print(f"🐙 GitHub: {total_wp} Wallpaper(s), {total_mk} Mockup(s) hochgeladen.", end="")
+    print(f"🐙 GitHub: {total_wp} Wallpaper(s), {total_mk} Mockup(s), {total_vid} Video(s) hochgeladen.", end="")
     if failed:
         print(f"  ⚠️  {failed} fehlgeschlagen.")
     else:

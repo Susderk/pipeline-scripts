@@ -362,6 +362,19 @@ def main():
 
     today_str = TARGET_DATE.strftime(DATE_FORMAT)
 
+    # === ID-FORMAT (DPS-WP-YYYYMMDD-HHMM-NNN) ============================
+    # Identifier dient gleichzeitig als product_id (Etsy/Facebook) und
+    # als Primärschlüssel für master-listings.json. HHMM ist die Lauf-
+    # Startzeit; NNN ist die laufende Nummer innerhalb des Laufs.
+    # Bei Staging-/Dry-Run wird "TEST" als Marker eingefügt:
+    #   prod:    DPS-WP-20260407-1430-001
+    #   staging: DPS-WP-TEST-20260407-1430-001
+    # Eindeutigkeit über Mehrfachläufe pro Tag ergibt sich aus HHMM.
+    is_test_run = DRYRUN or bool(cfg.get("STAGING_ISOLATION", False))
+    id_date_part = TARGET_DATE.strftime("%Y%m%d")
+    id_time_part = datetime.now().strftime("%H%M")
+    id_prefix = "DPS-WP-TEST" if is_test_run else "DPS-WP"
+
     # Idempotency guard: skip if entries for this day_folder already exist
     existing_for_date = [e for e in pending_existing if e.get("day_folder") == str(day_folder)]
     if existing_for_date:
@@ -402,7 +415,7 @@ def main():
         exclusions[scene] = release_date
 
         entry = {
-            "id": today_str + f"_{i+1:03d}",
+            "id": f"{id_prefix}-{id_date_part}-{id_time_part}-{i+1:03d}",
             "timestamp": datetime.now().isoformat(),
             "scenes": scene,
             "styles": style,

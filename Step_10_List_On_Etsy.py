@@ -3,41 +3,36 @@
 """
 Step_10_List_On_Etsy.py
 
-Erstellt Etsy-Listings (Entwürfe) aus listings.csv des Tagesordners.
-Duplikat-Handling: Wenn ein Listing mit gleichem Titel bereits existiert,
-wird automatisch "Neu " (DE) oder "New " (EN) vorangestellt.
+Erstellt Etsy-Listings (Entwürfe) aus master-listings.json des Tagesordners
+und schreibt zwei Content-Exporte:
+
+  • etsy-listing.csv     (DE+EN Content fuer manuelles Etsy-Listing-Backup)
+  • facebook-listing.csv (Commerce-Manager-Import, EN-only, mit Festwerten)
+
+Refactor-Punkt 6 (master-listings.json als SSoT):
+  - Reader: master-listings.json (kein listings.csv mehr)
+  - Matching: id-basiert via find_master_item (kein Substring-Matching)
+  - Ergebnis: etsy_url + listing_id werden ins master-Item zurueckgeschrieben
+  - pending.json-Status-Update ebenfalls per id
 
 Voraussetzungen:
   pip install requests
 
-Benötigte Umgebungsvariablen:
+Benoetigte Umgebungsvariablen:
   ETSY_API_KEY       – Etsy API Keystring (aus Etsy Developer Console)
   ETSY_ACCESS_TOKEN  – OAuth 2.0 Access Token (aus Etsy OAuth-Flow)
   ETSY_SHOP_ID       – Numerische Shop-ID (alternativ: etsy_shop_id in config.yaml)
 
-  → Fehlt ETSY_API_KEY, wird der Schritt ÜBERSPRUNGEN (kein Fehler, nächster Step läuft).
+  → Fehlt ETSY_API_KEY, wird der Schritt UEBERSPRUNGEN (kein Fehler).
 
 Config-Parameter (config.yaml):
-  etsy_shop_id:           ""             # Shop-ID (alternativ: Env-Var ETSY_SHOP_ID)
-  etsy_price:             3.99           # Preis pro Listing
-  etsy_currency_code:     "USD"          # Währung (ISO 4217)
-  etsy_quantity:          999            # Verfügbare Menge
-  etsy_taxonomy_id:       2078           # Etsy Kategorie-ID (2078 = Digital Prints)
-  etsy_who_made:          "i_did"        # Wer hat's gemacht (i_did / collective / someone_else)
-  etsy_when_made:         "made_to_order"# Wann gemacht (made_to_order / 2020_2025 / ...)
-  etsy_listing_state:     "draft"        # draft / active (active erst wenn Datei angehängt)
-  etsy_max_tags:          13             # Etsy erlaubt max. 13 Tags pro Listing
+  etsy_shop_id, etsy_price, etsy_currency_code, etsy_quantity, etsy_taxonomy_id,
+  etsy_who_made, etsy_when_made, etsy_listing_state, etsy_max_tags
 
 Hinweis zu digitalen Produkten:
   Etsy erfordert, dass nach dem Erstellen des Listings die Produktdatei
   manuell (oder via API /v3/.../files) hochgeladen wird, bevor das Listing
-  auf "active" gesetzt werden kann. Dieses Skript erstellt zunächst Entwürfe.
-
-Duplikat-Handling:
-  • Prüft vor der Erstellung alle existierenden Shop-Listings (max. 100)
-  • Falls Titel bereits vorhanden: Präfix hinzufügen
-  • Sprache für Präfix (DE "Neu " oder EN "New ") aus CSV ermittelt
-  • Aktualisierte Titel werden in tracker (uploaded_to_etsy.json) mit original_title gespeichert
+  auf "active" gesetzt werden kann. Dieses Skript erstellt zunaechst Entwuerfe.
 """
 
 import sys
@@ -55,7 +50,13 @@ except ImportError:
     print("❌ 'requests' fehlt. Bitte installieren: pip install requests")
     sys.exit(1)
 
-from config_loader import load_config, normalize_name, load_listings_csv, atomic_write_json
+from config_loader import (
+    load_config,
+    atomic_write_json,
+    load_master_listings,
+    save_master_listings,
+    find_master_item,
+)
 
 # === CONFIG ===
 cfg = load_config()
@@ -93,13 +94,18 @@ ETSY_LISTED_FILE   = JSON_PATH / "uploaded_to_etsy.json"
 YOUTUBE_STATUS     = STATUSES.get("youtube_done", "YouTube Done")
 ETSY_STATUS        = STATUSES.get("etsy_listed",  "Etsy Listed")
 
+# Festwerte fuer facebook-listing.csv (Commerce-Manager-Import)
+FB_PRICE        = "2,99"
+FB_AVAILABILITY = "auf Lager"
+FB_CONDITION    = "neu"
+
 
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
 
 def load_etsy_tracker() -> dict:
-    """Lädt uploaded_to_etsy.json; Key: 'day_folder|folder_name'."""
+    """Laedt uploaded_to_etsy.json; Key: 'day_folder|id'."""
     if not ETSY_LISTED_FILE.exists():
         return {}
     try:
@@ -114,44 +120,36 @@ def save_etsy_tracker(data: dict) -> None:
     atomic_write_json(ETSY_LISTED_FILE, data)
 
 
-def find_csv_row(folder_name: str, csv_rows: list[dict]) -> dict | None:
-    """Findet CSV-Zeile via etsy_title-Vergleich (exakt, dann Teilstring)."""
-    norm_folder = normalize_name(folder_name)
-    for row in csv_rows:
-        if normalize_name(row.get("etsy_title", "")) == norm_folder:
-            return row
-    for row in csv_rows:
-        norm_title = normalize_name(row.get("etsy_title", ""))
-        if norm_folder in norm_title or norm_title in norm_folder:
-            return row
-    return None
-
-
-def build_tags(row: dict) -> list:
-    """
-    Baut Tag-Liste für Etsy (max. ETSY_MAX_TAGS Tags, max. 20 Zeichen je Tag).
-    Bevorzugt etsy_tags_en; fällt auf etsy_tags_de zurück.
-    Etsy erlaubt keine Sonderzeichen außer Bindestrich und Leerzeichen.
-    """
-    raw = row.get("etsy_tags_en") or row.get("etsy_tags_de", "")
+def _split_tags(raw: str) -> list[str]:
+    """Splittet einen Tag-String (',' separiert) in normalisierte Tag-Liste."""
+    if not raw:
+        return []
     tags = [
         re.sub(r"[^a-zA-Z0-9 \-]", "", t.strip().strip('"'))[:20]
         for t in raw.split(",")
         if t.strip()
     ]
-    # Duplikate & Leerstrings entfernen
     seen, clean = set(), []
     for t in tags:
         t = t.strip()
         if t and t.lower() not in seen:
             seen.add(t.lower())
             clean.append(t)
-    return clean[:ETSY_MAX_TAGS]
+    return clean
 
 
-def build_description(row: dict) -> str:
-    """Baut Etsy-Beschreibung aus etsy_description_en + CTA."""
-    desc = row.get("etsy_description_en", "") or row.get("etsy_description_de", "")
+def build_tags_from_item(item: dict) -> list[str]:
+    """
+    Baut Tag-Liste fuer Etsy (max. ETSY_MAX_TAGS, max. 20 Zeichen je Tag).
+    Bevorzugt etsy_tags_en; faellt auf etsy_tags_de zurueck.
+    """
+    raw = item.get("etsy_tags_en") or item.get("etsy_tags_de") or ""
+    return _split_tags(raw)[:ETSY_MAX_TAGS]
+
+
+def build_description_from_item(item: dict) -> str:
+    """Etsy-Beschreibung aus etsy_description_en (Fallback DE)."""
+    desc = item.get("etsy_description_en") or item.get("etsy_description_de") or ""
     return desc.strip()
 
 
@@ -168,10 +166,7 @@ def etsy_headers() -> dict:
 
 
 def list_etsy_listings_by_shop(limit: int = 100) -> list:
-    """
-    Ruft alle Listings des Shops ab (begrenzt auf 'limit', default 100).
-    Gibt Liste der Listing-Dicts zurück oder leere Liste bei Fehler.
-    """
+    """Ruft die letzten 'limit' Listings des Shops ab (default 100)."""
     url = f"{ETSY_API_BASE}/shops/{ETSY_SHOP_ID}/listings"
     params = {"limit": limit, "sort_on": "created", "sort_order": "descending"}
     try:
@@ -184,46 +179,37 @@ def list_etsy_listings_by_shop(limit: int = 100) -> list:
     return []
 
 
-def check_and_fix_duplicate_title(original_title: str, row: dict) -> str:
+def check_and_fix_duplicate_title(original_title: str, item: dict) -> str:
     """
-    Prüft, ob ein Listing mit 'original_title' bereits existiert.
-    Falls ja: Präfix "Neu " (DE) bzw. "New " (EN) voranstellen.
-    Rückgabe: Möglicherweise geänderter Titel (max. 140 Zeichen).
+    Prueft, ob ein Listing mit 'original_title' bereits existiert.
+    Falls ja: Praefix "Neu " (DE) bzw. "New " (EN) voranstellen.
     """
-    # Sprache ermitteln (aus CSV: etsy_description_en vs. etsy_description_de)
-    is_english = bool(row.get("etsy_description_en", ""))
+    is_english = bool(item.get("etsy_description_en", ""))
     prefix = "New " if is_english else "Neu "
 
-    # Existierende Listings abrufen
     existing_listings = list_etsy_listings_by_shop()
     existing_titles = {listing.get("title", "") for listing in existing_listings}
 
     if original_title in existing_titles:
-        new_title = prefix + original_title
-        # Etsy-Limit einhalten (max. 140 Zeichen)
-        new_title = new_title[:140]
+        new_title = (prefix + original_title)[:140]
         print(f"   ℹ️  Duplikat erkannt: '{original_title}' → '{new_title}'")
         return new_title
-
     return original_title
 
 
 def create_etsy_listing(title: str, description: str, tags: list) -> dict | None:
-    """
-    Erstellt ein Etsy-Listing via POST /v3/application/shops/{shop_id}/listings.
-    Gibt das API-Response-Dict zurück oder None bei Fehler.
-    """
+    """POST /v3/application/shops/{shop_id}/listings."""
     url = f"{ETSY_API_BASE}/shops/{ETSY_SHOP_ID}/listings"
 
     payload = {
-        "title":       title[:140],       # Etsy-Limit: 140 Zeichen
+        "title":       title[:140],
         "description": description,
         "price":       ETSY_PRICE,
         "quantity":    ETSY_QUANTITY,
         "who_made":    ETSY_WHO_MADE,
         "when_made":   ETSY_WHEN_MADE,
         "taxonomy_id": ETSY_TAXONOMY_ID,
-        "type":        "download",        # Digitales Produkt
+        "type":        "download",
         "tags":        tags,
         "state":       ETSY_STATE,
         "is_supply":   False,
@@ -238,7 +224,6 @@ def create_etsy_listing(title: str, description: str, tags: list) -> dict | None
     if resp.status_code in (200, 201):
         return resp.json()
 
-    # Fehler-Detail ausgeben
     try:
         err = resp.json()
         msg = err.get("error", "") or err.get("message", "") or resp.text[:200]
@@ -246,61 +231,94 @@ def create_etsy_listing(title: str, description: str, tags: list) -> dict | None
         msg = resp.text[:200]
 
     print(f"   ❌ Etsy API Fehler {resp.status_code}: {msg}")
-
-    # Hilfreiche Hinweise bei bekannten Fehlercodes
     if resp.status_code == 401:
-        print("   ℹ️  Tipp: ETSY_ACCESS_TOKEN abgelaufen oder ungültig.")
+        print("   ℹ️  Tipp: ETSY_ACCESS_TOKEN abgelaufen oder ungueltig.")
     elif resp.status_code == 403:
         print("   ℹ️  Tipp: ETSY_ACCESS_TOKEN hat keine 'listings_w'-Berechtigung.")
     elif resp.status_code == 429:
         print("   ℹ️  Tipp: Rate-Limit erreicht. Kurz warten und erneut versuchen.")
-
     return None
 
 
-def write_etsy_urls_to_csv(csv_path: Path, csv_rows: list, listed: list) -> None:
-    """Trägt Etsy-Listing-URLs in listings.csv ein (Spalte 'etsy_url')."""
-    if not csv_rows or not listed:
-        return
+# ─────────────────────────────────────────────
+# CSV-Exporte
+# ─────────────────────────────────────────────
 
-    url_map = {normalize_name(item["folder"]): item["url"] for item in listed}
+ETSY_CSV_FIELDS = [
+    "title_de", "description_de", "short_line_de", "tags_de",
+    "title_en", "description_en", "short_line_en", "tags_en",
+]
 
-    for row in csv_rows:
-        if "etsy_url" not in row:
-            row["etsy_url"] = ""
+FB_CSV_FIELDS = [
+    "product_id", "video_link_github", "title", "price",
+    "payhip_link", "availability", "condition", "description",
+]
 
-    matched = 0
-    for row in csv_rows:
-        norm_title = normalize_name(row.get("etsy_title", ""))
-        if norm_title in url_map:
-            row["etsy_url"] = url_map[norm_title]
-            matched += 1
-            continue
-        for norm_folder, url in url_map.items():
-            if norm_folder in norm_title or norm_title in norm_folder:
-                row["etsy_url"] = url
-                matched += 1
-                break
 
-    if matched == 0:
-        print("   ⚠️  Kein CSV-Match für Etsy-URL gefunden.")
-        return
-
-    fieldnames = [k for k in csv_rows[0].keys() if k != "etsy_url"] + ["etsy_url"]
-    tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
+def write_etsy_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
+    """
+    Schreibt etsy-listing.csv (Content-Backup, DE+EN).
+    Bewusst KEIN id/folder/listing_id/etsy_url – nur Content-Felder.
+    """
+    csv_path = day_folder / "etsy-listing.csv"
     try:
-        with tmp.open("w", encoding="utf-8-sig", newline="") as f:
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(
-                f, fieldnames=fieldnames,
+                f, fieldnames=ETSY_CSV_FIELDS,
                 delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
             )
             writer.writeheader()
-            writer.writerows(csv_rows)
-        tmp.replace(csv_path)
-        print(f"   📋 listings.csv aktualisiert: {matched} Etsy-URL(s) eingetragen.")
+            for it in items:
+                writer.writerow({
+                    "title_de":        it.get("etsy_title_de") or it.get("etsy_title", ""),
+                    "description_de":  it.get("etsy_description_de", ""),
+                    "short_line_de":   it.get("short_line_de", ""),
+                    "tags_de":         it.get("etsy_tags_de", ""),
+                    "title_en":        it.get("etsy_title_en") or it.get("etsy_title", ""),
+                    "description_en":  it.get("etsy_description_en", ""),
+                    "short_line_en":   it.get("short_line_en", ""),
+                    "tags_en":         it.get("etsy_tags_en", ""),
+                })
+        print(f"   📋 etsy-listing.csv geschrieben: {len(items)} Zeile(n).")
+        return csv_path
     except Exception as e:
-        print(f"   ⚠️  listings.csv konnte nicht geschrieben werden: {e}")
-        tmp.unlink(missing_ok=True)
+        print(f"   ⚠️  etsy-listing.csv konnte nicht geschrieben werden: {e}")
+        return None
+
+
+def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
+    """
+    Schreibt facebook-listing.csv (Commerce-Manager-Import, EN-only, Festwerte).
+    Spalten: product_id | video_link_github | title | price | payhip_link |
+             availability | condition | description
+    Wird NICHT in Excel geoeffnet (manueller Import in Commerce Manager).
+    Auch Items ohne payhip_product_link / video_github_url werden geschrieben
+    (Commerce-Manager-Validierung uebernimmt der User).
+    """
+    csv_path = day_folder / "facebook-listing.csv"
+    try:
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=FB_CSV_FIELDS,
+                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
+            )
+            writer.writeheader()
+            for it in items:
+                writer.writerow({
+                    "product_id":        it.get("id", ""),
+                    "video_link_github": it.get("video_github_url") or "",
+                    "title":             it.get("etsy_title_en") or it.get("etsy_title", ""),
+                    "price":             FB_PRICE,
+                    "payhip_link":       it.get("payhip_product_link") or "",
+                    "availability":      FB_AVAILABILITY,
+                    "condition":         FB_CONDITION,
+                    "description":       it.get("etsy_description_en") or "",
+                })
+        print(f"   📋 facebook-listing.csv geschrieben: {len(items)} Zeile(n).")
+        return csv_path
+    except Exception as e:
+        print(f"   ⚠️  facebook-listing.csv konnte nicht geschrieben werden: {e}")
+        return None
 
 
 # ─────────────────────────────────────────────
@@ -310,36 +328,23 @@ def write_etsy_urls_to_csv(csv_path: Path, csv_rows: list, listed: list) -> None
 def main():
     print("[Step 10 – Etsy Listing] wird gestartet...")
 
-    # ── API-Key-Check: Fehlt der Key → Schritt überspringen ──────────────────
+    # ── API-Key-Check ────────────────────────────────────────────────────────
     if not ETSY_API_KEY:
         print()
-        print("ℹ️  ETSY_API_KEY nicht gesetzt → Etsy-Schritt wird übersprungen.")
-        print("   Sobald du deinen API-Key hast, setze diese Umgebungsvariablen:")
-        print("     ETSY_API_KEY       = <Keystring aus Etsy Developer Console>")
-        print("     ETSY_ACCESS_TOKEN  = <OAuth 2.0 Access Token>")
-        print("     ETSY_SHOP_ID       = <Deine numerische Shop-ID>")
-        print("   Alternativ: etsy_shop_id in config.yaml eintragen.")
+        print("ℹ️  ETSY_API_KEY nicht gesetzt → Etsy-Schritt wird uebersprungen.")
+        print("   Setze: ETSY_API_KEY / ETSY_ACCESS_TOKEN / ETSY_SHOP_ID")
         print()
-        sys.exit(0)   # Kein Fehler – nächster Step läuft normal weiter
+        sys.exit(0)
 
     if not ETSY_ACCESS_TOKEN:
-        print()
-        print("⚠️  ETSY_ACCESS_TOKEN nicht gesetzt → Etsy-Schritt wird übersprungen.")
-        print("   ETSY_API_KEY ist vorhanden, aber für Write-Operationen wird")
-        print("   zusätzlich ein OAuth 2.0 Access Token benötigt.")
-        print("   Setze: ETSY_ACCESS_TOKEN = <OAuth 2.0 Access Token>")
-        print()
+        print("\n⚠️  ETSY_ACCESS_TOKEN nicht gesetzt → Etsy-Schritt uebersprungen.\n")
         sys.exit(0)
 
     if not ETSY_SHOP_ID:
-        print()
-        print("⚠️  ETSY_SHOP_ID weder als Env-Var noch in config.yaml gefunden.")
-        print("   Bitte setzen: ETSY_SHOP_ID = <Deine numerische Shop-ID>")
-        print("   oder: etsy_shop_id in config.yaml eintragen.")
-        print()
+        print("\n⚠️  ETSY_SHOP_ID weder als Env-Var noch in config.yaml gefunden.\n")
         sys.exit(0)
 
-    # ── Zieldatum & Tagesordner ───────────────────────────────────────────────
+    # ── Zieldatum & Tagesordner ──────────────────────────────────────────────
     target_date = cfg["TARGET_DATE"]
     print(f"📅 Zieldatum: {target_date.strftime(DATE_FORMAT)}")
 
@@ -350,33 +355,37 @@ def main():
 
     if not day_folder.exists():
         print(f"❌ Tagesordner nicht gefunden: {day_folder}")
-        print("   Bitte zuerst Step 7 oder 9 ausführen.")
         sys.exit(1)
 
-    # ── listings.csv laden ────────────────────────────────────────────────────
-    csv_path = day_folder / "listings.csv"
-    csv_rows = load_listings_csv(csv_path)
+    # ── master-listings.json laden ───────────────────────────────────────────
+    master = load_master_listings(day_folder)
+    items = master.get("items", [])
 
-    if not csv_rows:
-        print(f"❌ listings.csv nicht gefunden oder leer: {csv_path}")
-        print("   Bitte zuerst Step 2 ausführen.")
+    if not items:
+        print("❌ master-listings.json leer oder nicht vorhanden.")
+        print("   Bitte zuerst Step 02 ausfuehren.")
         sys.exit(1)
 
-    print(f"📋 listings.csv geladen: {len(csv_rows)} Zeile(n)")
+    print(f"📋 master-listings.json geladen: {len(items)} Item(s)")
 
-    # ── Listings vorbereiten ──────────────────────────────────────────────────
+    # ── Listings vorbereiten ─────────────────────────────────────────────────
     jobs = []
-    for row in csv_rows:
-        title = row.get("etsy_title", "").strip()
+    for item in items:
+        title = (item.get("etsy_title") or item.get("etsy_title_en")
+                 or item.get("etsy_title_de") or "").strip()
         if not title:
-            print(f"   ⚠️  Zeile ohne etsy_title übersprungen: {row}")
+            print(f"   ⚠️  Item ohne etsy_title uebersprungen: id={item.get('id', '?')}")
             continue
-        desc = build_description(row)
-        tags = build_tags(row)
-        jobs.append({"title": title, "description": desc, "tags": tags, "row": row})
+        jobs.append({
+            "id":          item.get("id", ""),
+            "title":       title,
+            "description": build_description_from_item(item),
+            "tags":        build_tags_from_item(item),
+            "item":        item,
+        })
 
     if not jobs:
-        print("❌ Keine verwertbaren Zeilen in listings.csv gefunden.")
+        print("❌ Keine verwertbaren Items in master-listings.json gefunden.")
         sys.exit(1)
 
     print(f"\n🛍️  {len(jobs)} Listing(s) werden verarbeitet:")
@@ -384,46 +393,52 @@ def main():
         tag_preview = ", ".join(j["tags"][:5])
         if len(j["tags"]) > 5:
             tag_preview += "..."
-        print(f"   • {j['title']} | Tags: {tag_preview}")
+        print(f"   • [{j['id']}] {j['title']} | Tags: {tag_preview}")
 
     print(f"\n💶 Preis: {ETSY_PRICE} {ETSY_CURRENCY}  |  Zustand: {ETSY_STATE}")
     print(f"🏷️  Taxonomie-ID: {ETSY_TAXONOMY_ID}")
 
-    # ── DRY-RUN ───────────────────────────────────────────────────────────────
+    # ── DRY-RUN ──────────────────────────────────────────────────────────────
     if DRYRUN:
         print("\n🧪 DRY-RUN – keine echten Etsy-Listings werden erstellt.")
         for j in jobs:
-            print(f"\n   📦 {j['title']}")
+            print(f"\n   📦 [{j['id']}] {j['title']}")
             print(f"   Beschreibung: {j['description'][:80].replace(chr(10), ' ')}...")
             print(f"   Tags ({len(j['tags'])}): {', '.join(j['tags'])}")
+        # Im DRY-RUN trotzdem die Content-CSVs erzeugen (kein API-Call noetig)
+        print()
+        write_etsy_listing_csv(day_folder, items)
+        write_facebook_listing_csv(day_folder, items)
         print(f"\n{'='*52}")
         print("🧪 DRY-RUN abgeschlossen.")
         return
 
-    # ── Etsy-Listings erstellen ───────────────────────────────────────────────
-    etsy_tracker   = load_etsy_tracker()
-    listed         = []
-    failed         = []
+    # ── Etsy-Listings erstellen ──────────────────────────────────────────────
+    etsy_tracker = load_etsy_tracker()
+    listed   = []   # Liste von dicts: {id, listing_id, url}
+    failed   = []
 
     for j in jobs:
         print(f"\n{'─'*52}")
-        folder_name = normalize_name(j["title"])
-        tracker_key = f"{date_str}|{folder_name}"
+        tracker_key = f"{date_str}|{j['id']}"
 
         # Idempotency Guard – bereits gelistet?
         if tracker_key in etsy_tracker:
             existing = etsy_tracker[tracker_key]
-            print(f"⏭️  Bereits gelistet: {j['title']}")
+            print(f"⏭️  Bereits gelistet: [{j['id']}] {j['title']}")
             print(f"   🔗 {existing.get('url', '?')}")
             listed.append({
-                "folder": folder_name,
+                "id":         j["id"],
                 "listing_id": existing["listing_id"],
-                "url": existing["url"],
+                "url":        existing["url"],
             })
+            # Sicherheitsnetz: master-Item ggf. nachpflegen
+            j["item"]["etsy_url"]   = existing.get("url")
+            j["item"]["listing_id"] = existing.get("listing_id")
             continue
 
-        # Duplikat-Prüfung: Titel ggf. mit Präfix versehen
-        final_title = check_and_fix_duplicate_title(j["title"], j["row"])
+        # Duplikat-Pruefung: Titel ggf. mit Praefix
+        final_title = check_and_fix_duplicate_title(j["title"], j["item"])
 
         print(f"📤 Erstelle Listing: {final_title}")
         print(f"   Tags: {', '.join(j['tags'][:5])}{'...' if len(j['tags']) > 5 else ''}")
@@ -435,28 +450,33 @@ def main():
             url = f"https://www.etsy.com/listing/{listing_id}"
             print(f"   ✅ Erstellt! Listing-ID: {listing_id}")
             print(f"   🔗 {url}")
-            listed.append({"folder": folder_name, "listing_id": listing_id, "url": url})
-            # Sofort persistieren (mit möglicherweise geändertem Titel)
+            listed.append({"id": j["id"], "listing_id": listing_id, "url": url})
+
+            # master-Item direkt im Speicher updaten
+            j["item"]["etsy_url"]   = url
+            j["item"]["listing_id"] = listing_id
+
+            # Tracker persistieren
             etsy_tracker[tracker_key] = {
-                "listing_id": listing_id,
-                "url": url,
-                "title": final_title,  # Titel kann "Neu " / "New " prefix haben
+                "listing_id":     listing_id,
+                "url":            url,
+                "title":          final_title,
                 "original_title": j["title"],
-                "date": date_str,
-                "created_at": datetime.now().isoformat(),
+                "id":             j["id"],
+                "date":           date_str,
+                "created_at":     datetime.now().isoformat(),
             }
             save_etsy_tracker(etsy_tracker)
         else:
             failed.append(j["title"])
 
-        # Kurze Pause zwischen API-Calls (Rate-Limit-Schutz)
         time.sleep(0.5)
 
-    # ── Zusammenfassung ───────────────────────────────────────────────────────
+    # ── Zusammenfassung ──────────────────────────────────────────────────────
     print(f"\n{'='*52}")
     print(f"🎯 Step 10 abgeschlossen: {len(listed)} gelistet, {len(failed)} fehlgeschlagen.")
     for item in listed:
-        print(f"   ✅ {item['url']}")
+        print(f"   ✅ [{item['id']}] {item['url']}")
     for title in failed:
         print(f"   ❌ {title}")
     print(f"{'='*52}")
@@ -464,11 +484,21 @@ def main():
     if not listed:
         sys.exit(1)
 
-    # ── Etsy-URLs in listings.csv eintragen ───────────────────────────────────
-    print("\n📋 Trage Etsy-URLs in listings.csv ein...")
-    write_etsy_urls_to_csv(csv_path, csv_rows, listed)
+    # ── master-listings.json persistieren (etsy_url + listing_id) ────────────
+    try:
+        save_master_listings(day_folder, master)
+        print(f"\n🗂️  master-listings.json aktualisiert: "
+              f"{len(listed)} Item(s) mit etsy_url / listing_id.")
+    except Exception as e:
+        print(f"❌ master-listings.json konnte nicht geschrieben werden: {e}")
+        sys.exit(1)
 
-    # ── Status in pending.json aktualisieren ──────────────────────────────────
+    # ── Content-Exporte (etsy + facebook) ────────────────────────────────────
+    print()
+    write_etsy_listing_csv(day_folder, items)
+    write_facebook_listing_csv(day_folder, items)
+
+    # ── Status in pending.json aktualisieren (id-basiert) ────────────────────
     if not PENDING_FILE.exists():
         return
 
@@ -476,26 +506,26 @@ def main():
         with PENDING_FILE.open("r", encoding="utf-8") as f:
             pending = json.load(f)
 
-        listed_map     = {item["folder"]: item for item in listed}
+        listed_by_id = {item["id"]: item for item in listed if item.get("id")}
         status_updated = False
 
         for entry in pending:
-            if entry.get("status") in (YOUTUBE_STATUS, "All Done", "Video Done"):
-                folder_name = normalize_name(
-                    Path(entry.get("folder", "")).name or entry.get("title", "")
-                )
-                if folder_name in listed_map:
-                    item = listed_map[folder_name]
-                    entry["status"]     = ETSY_STATUS
-                    entry["etsy_url"]   = item["url"]
-                    entry["listing_id"] = item["listing_id"]
-                    status_updated = True
+            entry_id = entry.get("id", "")
+            if not entry_id or entry_id not in listed_by_id:
+                continue
+            if entry.get("status") not in (YOUTUBE_STATUS, "All Done", "Video Done", "Upscaled"):
+                continue
+            li = listed_by_id[entry_id]
+            entry["status"]     = ETSY_STATUS
+            entry["etsy_url"]   = li["url"]
+            entry["listing_id"] = li["listing_id"]
+            status_updated = True
 
         if status_updated:
             atomic_write_json(PENDING_FILE, pending)
-            print(f"\n💾 Status auf '{ETSY_STATUS}' gesetzt.")
+            print(f"\n💾 pending.json: Status auf '{ETSY_STATUS}' gesetzt (id-basiert).")
         else:
-            print(f"\nℹ️  Keine passenden Einträge für Statusänderung in pending.json gefunden.")
+            print("\nℹ️  Keine passenden id-Treffer in pending.json fuer Statusaenderung.")
 
     except Exception as e:
         print(f"⚠️  Konnte pending.json nicht aktualisieren: {e}")
