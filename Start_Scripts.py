@@ -25,6 +25,7 @@ Workflow-Schritte:
 
 import os
 import sys
+import csv
 import subprocess
 import shutil
 import atexit
@@ -33,7 +34,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 
-from config_loader import load_config
+from config_loader import (
+    load_config,
+    get_day_folder,
+    load_master_listings,
+    save_master_listings,
+    find_master_item,
+)
 
 # === Staging-Modus prüfen ===
 if "--staging" in sys.argv:
@@ -220,6 +227,162 @@ def archive_and_clear_pending_if_enabled():
         print("ℹ️ Pending nicht geleert (clear_pending = false).")
 
 
+def _open_csv_in_excel(csv_path: Path) -> bool:
+    """
+    Oeffnet eine CSV im Standardprogramm (bevorzugt Excel) im Hintergrund.
+    Gibt True bei Erfolg zurueck, False wenn kein Oeffnen moeglich war.
+    Non-blocking: wir warten nicht auf Excel-Exit.
+    """
+    try:
+        # Windows: Excel explizit via Registry suchen, sonst os.startfile
+        if os.name == "nt":
+            try:
+                import winreg
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\excel.exe",
+                ) as k:
+                    excel_exe, _ = winreg.QueryValueEx(k, "")
+                subprocess.Popen([excel_exe, str(csv_path)])
+                return True
+            except OSError:
+                pass
+            os.startfile(str(csv_path))  # type: ignore[attr-defined]
+            return True
+        # Non-Windows (Cowork-VM etc.): xdg-open Best-Effort
+        subprocess.Popen(["xdg-open", str(csv_path)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception as e:
+        print(f"⚠️  Konnte {csv_path.name} nicht oeffnen: {e}")
+        return False
+
+
+def _csv_is_unlocked(csv_path: Path) -> bool:
+    """
+    Prueft ob die CSV exklusiv schreibbar ist (= Excel hat die Arbeitsmappe
+    geschlossen). Gibt True zurueck wenn der Lock weg ist.
+    """
+    try:
+        # Append-mode testet Schreib-Lock, ohne den Inhalt zu beruehren
+        with csv_path.open("a", encoding="utf-8-sig"):
+            return True
+    except PermissionError:
+        return False
+    except Exception:
+        # Andere Fehler nicht als Lock werten
+        return True
+
+
+def payhip_approval_gate() -> None:
+    """
+    Payhip-Approval-Gate (Refactor-Punkt 5).
+
+    Oeffnet payhip-listing.csv im Tagesordner, wartet bis der User
+    payhip_product_link und promo_code eingetragen und Excel geschlossen
+    hat, und synct beide Felder per id zurueck in master-listings.json.
+
+    Skip-Bedingungen:
+      - STAGING_ISOLATION ist aktiv (keine Excel-Interaktion in der VM)
+      - payhip-listing.csv existiert nicht (z.B. Step_08 deaktiviert)
+      - alle master-Items haben bereits payhip_product_link gesetzt
+    """
+    staging_isolation = bool(cfg.get("STAGING_ISOLATION", False))
+    if staging_isolation:
+        print("\nℹ️  Payhip Approval Gate: STAGING_ISOLATION aktiv – uebersprungen.")
+        return
+
+    day_folder = get_day_folder(
+        Path(cfg["IMAGES_PATH"]),
+        date_format=cfg["DATE_FORMAT"],
+        target_date=cfg["TARGET_DATE"],
+    )
+    csv_path = day_folder / "payhip-listing.csv"
+
+    if not csv_path.exists():
+        print(f"\nℹ️  Payhip Approval Gate: {csv_path.name} nicht gefunden – uebersprungen.")
+        return
+
+    master = load_master_listings(day_folder)
+    items = master.get("items", [])
+    if items and all((it.get("payhip_product_link") or "") for it in items):
+        print("\nℹ️  Payhip Approval Gate: alle master-Items haben bereits "
+              "payhip_product_link – uebersprungen (Re-Run-Idempotenz).")
+        return
+
+    print()
+    print("=" * 60)
+    print("🛒 PAYHIP APPROVAL GATE")
+    print("=" * 60)
+    print(f"Datei: {csv_path}")
+    print()
+    print("Bitte erledige folgende Schritte:")
+    print("  1. Erstelle die Payhip-Listings (Produkt-Link + Promo-Code)")
+    print("  2. Trage payhip_product_link und promo_code je Zeile in der CSV ein")
+    print("  3. Speichere und SCHLIESSE die Arbeitsmappe in Excel")
+    print("  4. Druecke dann ENTER, um den Workflow fortzusetzen")
+    print("=" * 60)
+
+    open_excel = bool(config.get("open_payhip_csv_at_approval", True))
+    if open_excel:
+        if not _open_csv_in_excel(csv_path):
+            print("⚠️  Excel konnte nicht automatisch geoeffnet werden – "
+                  "bitte oeffne die Datei manuell.")
+    else:
+        print("ℹ️  open_payhip_csv_at_approval=false – bitte oeffne die Datei selbst.")
+
+    # Loop: ENTER abwarten, dann Lock pruefen
+    while True:
+        try:
+            input("\n⏳ ENTER druecken wenn Eintraege gespeichert und Excel geschlossen ist "
+                  "(oder 'q' zum Abbrechen): ").strip().lower()
+        except KeyboardInterrupt:
+            print("\n⚠️  Payhip Approval Gate abgebrochen.")
+            sys.exit(1)
+        if not _csv_is_unlocked(csv_path):
+            print(f"⚠️  {csv_path.name} ist noch gesperrt – "
+                  f"bitte Arbeitsmappe in Excel schliessen und erneut ENTER.")
+            continue
+        break
+
+    # CSV zurueckgelesen, master-listings.json updaten
+    updated, missing = 0, 0
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f, delimiter=";")
+            for row in reader:
+                entry_id = (row.get("id") or "").strip()
+                if not entry_id:
+                    continue
+                item = find_master_item(master, entry_id)
+                if item is None:
+                    missing += 1
+                    print(f"   ⚠️  master-Item mit id '{entry_id}' nicht gefunden – uebersprungen.")
+                    continue
+                # NUR diese beiden Felder werden zurueckgeschrieben
+                link = (row.get("payhip_product_link") or "").strip()
+                code = (row.get("promo_code") or "").strip()
+                item["payhip_product_link"] = link or None
+                item["promo_code"]          = code or None
+                updated += 1
+    except Exception as e:
+        print(f"❌ {csv_path.name} konnte nicht gelesen werden: {e}")
+        sys.exit(1)
+
+    try:
+        save_master_listings(day_folder, master)
+        print(f"\n🗂️  master-listings.json aktualisiert: "
+              f"{updated} Item(s) mit payhip_product_link / promo_code.")
+        if missing:
+            print(f"   ⚠️  {missing} CSV-Zeile(n) ohne passende master-id uebersprungen.")
+    except Exception as e:
+        print(f"❌ master-listings.json konnte nicht geschrieben werden: {e}")
+        sys.exit(1)
+
+    print("✅ Payhip Approval Gate abgeschlossen.")
+    print()
+
+
 def main():
     print("=" * 52)
     print("🚀 Starte Workflow mit zentralem Config-File")
@@ -296,6 +459,9 @@ def main():
     # Step 09: Filter + Upscaling
     if "upscale" in run_scripts:
         run_script("Step 09 – Filter & Upscaling", "Step_09_Upscale_Pics.py")
+
+    # === Payhip Approval Gate (Inline, Refactor-Punkt 5) ===
+    payhip_approval_gate()
 
     # === Approval Gate (nur im Staging-Modus) ===
     if os.environ.get("PIPELINE_CONFIG") == "config.staging.yaml":
