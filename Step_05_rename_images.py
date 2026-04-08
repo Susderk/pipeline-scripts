@@ -8,13 +8,23 @@ Step_05_rename_images.py
   (entry["images"] Liste wird mit neuen Pfaden und Dateinamen aktualisiert)
 - Setzt Status auf "Renamed"
 - Schreibt neue Dateinamen und Pfade zurück in pending.json
+- Synct den Ordnernamen (Basename) aus pending-Eintrag in master-listings.json
+  (per id, Feld "folder") — Single Source of Truth aktuell halten.
+- Schreibt canva-listing.csv im Tagesordner (eine Spalte "folder", Basename pro
+  Marketing-Ordner) als Referenz für die Canva-Mockup-Erstellung in Step_06.
 """
 
 import os
 import sys
+import csv
 import json
 from pathlib import Path
-from config_loader import load_config
+from config_loader import (
+    load_config,
+    load_master_listings,
+    save_master_listings,
+    find_master_item,
+)
 
 
 def atomic_write_json(path: Path, data) -> None:
@@ -144,6 +154,8 @@ def main():
 
     total_renamed = 0
     updated = False
+    # day_folder → Liste von (id, folder_basename) für Master-Sync und canva-listing.csv
+    per_day_folder: dict[str, list[tuple[str, str]]] = {}
 
     for entry in entries:
         status = entry.get("status")
@@ -173,6 +185,12 @@ def main():
             entry["status"] = renamed_status
             updated = True
             total_renamed += len(renamed_list)
+            # Für Master-Sync und canva-listing.csv merken
+            day_key = entry.get("day_folder", "")
+            entry_id = entry.get("id", "")
+            folder_basename = os.path.basename(folder_path)
+            if day_key and entry_id and folder_basename:
+                per_day_folder.setdefault(day_key, []).append((entry_id, folder_basename))
         else:
             print(f"⚠️ Keine Bilder umbenannt für: {folder_path}")
 
@@ -184,6 +202,43 @@ def main():
             print(f"✅ {prompts_pending_path} aktualisiert (Status auf '{renamed_status}', Pfade aktualisiert).")
         except Exception as e:
             print(f"❌ Fehler beim Speichern von {prompts_pending_path}: {e}")
+
+    # === MASTER-LISTINGS.JSON SYNC + canva-listing.csv ===
+    # Pro Tagesordner: Ordnernamen in master items[].folder setzen und canva-listing.csv
+    # schreiben. Nur im Produktivlauf — DRY-RUN schreibt keine Dateien.
+    if not DRYRUN and per_day_folder:
+        for day_key, id_folder_pairs in per_day_folder.items():
+            day_path = Path(day_key)
+            try:
+                master = load_master_listings(day_path)
+                master_updated = False
+                for entry_id, folder_basename in id_folder_pairs:
+                    item = find_master_item(master, entry_id)
+                    if item is None:
+                        print(f"⚠️  master-listings.json: id '{entry_id}' nicht gefunden – Sync übersprungen.")
+                        continue
+                    if item.get("folder") != folder_basename:
+                        item["folder"] = folder_basename
+                        master_updated = True
+                if master_updated:
+                    save_master_listings(day_path, master)
+                    print(f"🗂️  master-listings.json folder-Feld synchronisiert "
+                          f"({len(id_folder_pairs)} Eintrag/Einträge): {day_path / 'master-listings.json'}")
+            except Exception as e:
+                print(f"❌ master-listings.json Sync fehlgeschlagen für {day_path}: {e}")
+
+            # canva-listing.csv schreiben (eine Spalte "folder", Basename)
+            canva_path = day_path / "canva-listing.csv"
+            try:
+                canva_path.parent.mkdir(parents=True, exist_ok=True)
+                with canva_path.open("w", encoding="utf-8-sig", newline="") as f:
+                    writer = csv.writer(f, delimiter=";", quoting=csv.QUOTE_ALL)
+                    writer.writerow(["folder"])
+                    for _, folder_basename in id_folder_pairs:
+                        writer.writerow([folder_basename])
+                print(f"🎨 canva-listing.csv geschrieben ({len(id_folder_pairs)} Zeilen): {canva_path}")
+            except Exception as e:
+                print(f"❌ Schreiben von {canva_path} fehlgeschlagen: {e}")
 
     print(f"=== Insgesamt umbenannte Bilder: {total_renamed} ===")
     print("✅ Step 5 abgeschlossen.")
