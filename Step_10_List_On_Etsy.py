@@ -328,21 +328,24 @@ def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | No
 def main():
     print("[Step 10 – Etsy Listing] wird gestartet...")
 
-    # ── API-Key-Check ────────────────────────────────────────────────────────
-    if not ETSY_API_KEY:
-        print()
-        print("ℹ️  ETSY_API_KEY nicht gesetzt → Etsy-Schritt wird uebersprungen.")
-        print("   Setze: ETSY_API_KEY / ETSY_ACCESS_TOKEN / ETSY_SHOP_ID")
-        print()
-        sys.exit(0)
+    # ── API-Verfuegbarkeit pruefen ───────────────────────────────────────────
+    # Fehlende Keys/Tokens brechen den Schritt NICHT ab. Der Schritt laeuft
+    # weiter und erzeugt zumindest die Content-CSVs (etsy-listing.csv +
+    # facebook-listing.csv). Nur der eigentliche API-Upload (Listing-Erstellung,
+    # Tracker, etsy_url/listing_id Write-Back) wird uebersprungen.
+    # Grund: Etsy-Developer-Approval liegt noch nicht vor; bis dahin laeuft
+    # Step_10 "blind" mit.
+    missing = []
+    if not ETSY_API_KEY:      missing.append("ETSY_API_KEY")
+    if not ETSY_ACCESS_TOKEN: missing.append("ETSY_ACCESS_TOKEN")
+    if not ETSY_SHOP_ID:      missing.append("ETSY_SHOP_ID")
+    etsy_api_available = not missing
 
-    if not ETSY_ACCESS_TOKEN:
-        print("\n⚠️  ETSY_ACCESS_TOKEN nicht gesetzt → Etsy-Schritt uebersprungen.\n")
-        sys.exit(0)
-
-    if not ETSY_SHOP_ID:
-        print("\n⚠️  ETSY_SHOP_ID weder als Env-Var noch in config.yaml gefunden.\n")
-        sys.exit(0)
+    if not etsy_api_available:
+        print()
+        print("ℹ️  Etsy-API nicht verfuegbar – fehlende Werte: " + ", ".join(missing))
+        print("    → API-Upload wird uebersprungen, CSV-Exporte laufen normal.")
+        print()
 
     # ── Zieldatum & Tagesordner ──────────────────────────────────────────────
     target_date = cfg["TARGET_DATE"]
@@ -413,10 +416,22 @@ def main():
         print("🧪 DRY-RUN abgeschlossen.")
         return
 
-    # ── Etsy-Listings erstellen ──────────────────────────────────────────────
+    # ── Etsy-Listings erstellen (nur wenn API verfuegbar) ────────────────────
+    listed: list = []
+    failed: list = []
+
+    if not etsy_api_available:
+        print("\n⏭️  API-Upload uebersprungen (Keys/Tokens fehlen).")
+        print("    master-listings.json bleibt bei etsy_url/listing_id unveraendert.")
+        print()
+        write_etsy_listing_csv(day_folder, items)
+        write_facebook_listing_csv(day_folder, items)
+        print(f"\n{'='*52}")
+        print("✅ Step 10 abgeschlossen (blind / nur CSV-Export).")
+        print(f"{'='*52}")
+        return
+
     etsy_tracker = load_etsy_tracker()
-    listed   = []   # Liste von dicts: {id, listing_id, url}
-    failed   = []
 
     for j in jobs:
         print(f"\n{'─'*52}")
