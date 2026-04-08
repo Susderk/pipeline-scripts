@@ -3,20 +3,14 @@
 """
 Step_09_Upscale_Pics.py
 
-NEU: Filtert zuerst gelöschte Bilder aus prompts_pending.json heraus,
-     dann Upscaling der verbleibenden Bilder.
-
-Filter-Logik:
-- Liest alle Einträge mit Status "Renamed"
-- Prüft für jedes Bild in entry["images"] ob local_path noch existiert
-- Entfernt Einträge aus der images-Liste wenn Datei nicht mehr vorhanden
-- Einträge mit leerer images-Liste werden übersprungen (kein Upscaling)
-
 Upscaling-Pipeline:
-- Skaliert alle verbliebenen Bilder per Real-ESRGAN hoch
+- Skaliert alle Bilder der Einträge mit Status "YouTube Done" per Real-ESRGAN hoch
 - Speichert hochskalierte Bilder in 4k-Unterordner
 - Aktualisiert upscaled_path in pending.json
 - Setzt Status auf "Upscaled"
+
+Hinweis: Das Filtern vom Nutzer gelöschter Bilder passiert in Step_06
+(direkt nach der Sichtkontrolle), nicht hier.
 """
 
 import sys
@@ -86,42 +80,6 @@ def check_realesrgan() -> bool:
         return False
     except Exception:
         return True
-
-# === FILTER: Gelöschte Bilder entfernen ===
-def filter_deleted_images(pending: list, renamed_status: str, dryrun: bool) -> tuple:
-    """
-    Entfernt Bilder aus pending["images"], deren local_path nicht mehr existiert.
-    Gibt (gefilterte pending-Liste, Anzahl entfernter Bilder) zurück.
-    """
-    total_removed = 0
-
-    for entry in pending:
-        if dryrun:
-            continue
-        if entry.get("status") != renamed_status:
-            continue
-
-        images = entry.get("images", [])
-        if not images:
-            continue
-
-        before = len(images)
-        surviving = []
-        for img in images:
-            local_path = img.get("local_path", "")
-            if local_path and Path(local_path).exists():
-                surviving.append(img)
-            else:
-                print(f"🗑️  Entfernt (Datei gelöscht): {Path(local_path).name if local_path else 'unbekannt'}")
-                total_removed += 1
-
-        entry["images"] = surviving
-        after = len(surviving)
-
-        if before != after:
-            print(f"   → {before} Bilder vorher, {after} nach Filterung für: {entry.get('id', '?')}")
-
-    return pending, total_removed
 
 # === UPSCALING ===
 def upscale_image(image_path: Path, dryrun: bool = False) -> Path | None:
@@ -444,23 +402,14 @@ def main():
         print("❌ prompts_pending.json beschädigt.")
         sys.exit(1)
 
-    renamed_status      = STATUSES.get("renamed",      "Renamed")
     youtube_done_status = STATUSES.get("youtube_done", "YouTube Done")
     upscaled_status     = STATUSES.get("upscaled",     "Upscaled")
     sim_status          = STATUSES.get("simulation",   "Simulation")
 
-    # === PHASE 1: Gelöschte Bilder herausfiltern ===
+    # === Upscaling ===
+    # Hinweis: Filtern gelöschter Bilder passiert in Step_06 nach der Sichtkontrolle.
     print()
-    print("🔍 Phase 1: Prüfe welche Bilder noch vorhanden sind...")
-    pending, removed_count = filter_deleted_images(pending, renamed_status, DRYRUN)
-    if removed_count > 0:
-        print(f"🗑️  {removed_count} gelöschte Bilder aus pending.json entfernt.")
-    else:
-        print("✅ Alle Bilder vorhanden, nichts zu filtern.")
-
-    # === PHASE 2: Upscaling ===
-    print()
-    print("🔍 Phase 2: Upscaling der verbliebenen Bilder...")
+    print("🔍 Upscaling der Bilder...")
     total_images = 0
     updated = False
 
@@ -506,7 +455,7 @@ def main():
     # Pending nach Phase 2 speichern
     if DRYRUN:
         print(f"\n🧪 DRY-RUN: {total_images} Bilder simuliert. Keine Änderungen gespeichert.")
-    elif updated or removed_count > 0:
+    elif updated:
         try:
             atomic_write_json(PENDING_FILE, pending)
             print(f"\n💾 Pending aktualisiert.")

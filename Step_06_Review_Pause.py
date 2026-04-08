@@ -19,11 +19,12 @@ Sichtkontrolle durch den Nutzer:
 - ENTER drücken → Workflow läuft weiter
 """
 
+import json
 import sys
 import zipfile
 from pathlib import Path
 from datetime import date as _date
-from config_loader import load_config, get_day_folder, load_master_listings
+from config_loader import load_config, get_day_folder, load_master_listings, atomic_write_json
 
 try:
     import pyperclip
@@ -272,6 +273,65 @@ def main():
                 print("\nℹ️  Keine passenden ZIPs gefunden (gleicher Name + heutiges Datum).")
             else:
                 print(f"\n📦 {zips_imported}/{zips_found} ZIP(s) erfolgreich importiert.")
+
+    # =================================================================
+    # FILTER: Vom Nutzer gelöschte Bilder aus prompts_pending.json entfernen
+    # Muss direkt nach der Sichtkontrolle laufen, damit Step_07/07a/08
+    # nur noch mit den tatsächlich überlebenden Bildern arbeiten.
+    # (Früher in Step_09 Phase 1 – dort wirkungslos, weil der Status dort
+    # bereits "YouTube Done" war und der Filter auf "Renamed" prüft.)
+    # =================================================================
+    PENDING_FILE  = Path(cfg["PENDING_FILE"])
+    STATUSES      = cfg["STATUSES"]
+    renamed_status = STATUSES.get("renamed", "Renamed")
+
+    print("=" * 60)
+    print("🔍 Filter: Prüfe welche Bilder noch vorhanden sind...")
+    print("=" * 60)
+
+    if not PENDING_FILE.exists():
+        print(f"ℹ️  {PENDING_FILE.name} nicht gefunden – Filter übersprungen.")
+    else:
+        try:
+            with PENDING_FILE.open("r", encoding="utf-8") as _f:
+                _pending = json.load(_f)
+            if not isinstance(_pending, list):
+                raise ValueError("prompts_pending.json ist kein Listen-Format")
+        except Exception as _e:
+            print(f"⚠️  {PENDING_FILE.name} konnte nicht gelesen werden: {_e}")
+            _pending = None
+
+        if _pending is not None:
+            _removed = 0
+            for _entry in _pending:
+                if _entry.get("status") != renamed_status:
+                    continue
+                _images = _entry.get("images", [])
+                if not _images:
+                    continue
+                _before = len(_images)
+                _surviving = []
+                for _img in _images:
+                    _lp = _img.get("local_path", "")
+                    if _lp and Path(_lp).exists():
+                        _surviving.append(_img)
+                    else:
+                        print(f"🗑️  Entfernt (Datei gelöscht): {Path(_lp).name if _lp else 'unbekannt'}")
+                        _removed += 1
+                _entry["images"] = _surviving
+                _after = len(_surviving)
+                if _before != _after:
+                    print(f"   → {_before} Bilder vorher, {_after} nach Filterung für: {_entry.get('id', '?')}")
+
+            if _removed > 0:
+                try:
+                    atomic_write_json(PENDING_FILE, _pending)
+                    print(f"✅ {_removed} gelöschte Bilder aus {PENDING_FILE.name} entfernt.")
+                except Exception as _e:
+                    print(f"❌ Schreiben von {PENDING_FILE.name} fehlgeschlagen: {_e}")
+                    sys.exit(1)
+            else:
+                print("✅ Alle Bilder vorhanden, nichts zu filtern.")
 
     print()
     print("▶️  Workflow wird fortgesetzt.")
