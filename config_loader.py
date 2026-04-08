@@ -12,8 +12,6 @@ Zentrale Loader-Funktion:
 import sys
 import os
 import yaml   # PyYAML wird benötigt: pip install pyyaml
-import re
-import csv
 import json
 import tempfile
 import shutil
@@ -198,34 +196,6 @@ def load_config():
         "STAGING_TEMP_DIR":      STAGING_TEMP_DIR,
         "remap_pending_entries_to_staging": remap_pending_entries_to_staging
     }
-
-
-def normalize_name(name: str) -> str:
-    """Normalisiert einen String für Datei-/Ordner-Vergleiche (lowercase, nur a-z0-9)."""
-    return re.sub(r"[^a-z0-9]", "", name.lower())
-
-
-def load_listings_csv(path, exit_on_error: bool = False) -> list[dict]:
-    """
-    DEPRECATED — wird durch load_master_listings() ersetzt.
-    Bleibt temporär bestehen, bis Step_08/10/11 vollständig auf
-    master-listings.json umgestellt sind. Wird am Ende des Refactors
-    ersatzlos entfernt.
-    """
-    try:
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            return [{k: v.strip('"').strip() if v else "" for k, v in row.items()} for row in reader]
-    except FileNotFoundError:
-        print(f"⚠️  listings.csv nicht gefunden: {path}")
-        if exit_on_error:
-            sys.exit(1)
-        return []
-    except Exception as e:
-        print(f"❌ Fehler beim Lesen von {path}: {e}")
-        if exit_on_error:
-            sys.exit(1)
-        return []
 
 
 MASTER_LISTINGS_FILENAME = "master-listings.json"
