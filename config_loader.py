@@ -224,8 +224,8 @@ def load_master_listings(day_folder, exit_on_error: bool = False) -> dict:
             return _empty_master_listings(day_folder)
         return data
     except FileNotFoundError:
-        print(f"⚠️  master-listings.json nicht gefunden: {path}")
         if exit_on_error:
+            print(f"❌ master-listings.json nicht gefunden: {path}")
             sys.exit(1)
         return _empty_master_listings(day_folder)
     except Exception as e:
