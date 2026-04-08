@@ -112,18 +112,15 @@ prompts_dir: prompts
 realesrgan_model: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
 realesrgan_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
 run_scripts:
+# Reduziert fuer Punkt-10-Integritaetscheck (master-listings.json Refactor):
+# nur die Steps, die am JSON-Datenfluss beteiligt sind. Externe/HW-Schritte
+# (images, music, video, youtube, upscale, etsy, meta, knorko) sind aus,
+# weil sie in Staging keine realen Daten haben bzw. externe APIs brauchen.
+# Nach erfolgreichem Refactor-Test wieder auf Vollset erweitern.
 - csv
 - marketing
-- images
 - rename
 - review
-- music
-- video
-- youtube
-- upscale
-- etsy
-- meta
-- knorko
 
 shop_cta: Buy here 👉 payhip.com/digipicshop | etsy.com/shop/digipicshopdesigns
 statuses:
