@@ -5,16 +5,22 @@ Step_11_Post_Video_Meta.py
 
 Postet das in Step_07 erstellte Video als Reel auf Facebook und Instagram.
 
+Refactor-Punkt 7 (master-listings.json als SSoT):
+  - Reader: master-listings.json (kein listings.csv / meta-listing.csv mehr)
+  - Matching: id-basiert via find_master_item
+  - Payhip-Pause entfernt: promo_code + YT-Einbettung erfolgen bereits im
+    Payhip-Approval-Gate (Start_Scripts.py) nach Step_09
+  - meta-listing.csv wird NICHT mehr erzeugt (alle Infos im master)
+  - stockportal-listing.csv wird NEU erzeugt (folder;stock_tags fuer
+    Adobe-Stock copy-paste)
+
 Ablauf:
-  1. Alle pending.json-Einträge mit status="Video Done" suchen
-  2. PAUSE – Lock-Datei erstellen, Workflow stoppt.
-     → User pflegt Payhip-Produktseite (YT-Video einbetten)
-     → User trägt optional promo_code in listings.csv ein
-     → User löscht Lock-Datei und drückt ENTER
-  3. listings.csv frisch lesen (promo_code-Spalte auswerten)
-  4. Caption bauen: etsy_description_en + ggf. zufälliger Promo-Text mit Code
-  5. Facebook Reel: Dreiphasiger Upload (start → Bytes → finish → publish)
-  6. Instagram Reel: Resumable Upload → Container → Status-Polling → Publish
+  1. Alle pending.json-Eintraege mit status in ELIGIBLE_STATUSES suchen
+  2. master-listings.json laden
+  3. Caption bauen: etsy_description_en + ggf. Promo-Text + CTA + Hashtags
+  4. Facebook Reel: Dreiphasiger Upload (start → Bytes → finish → publish)
+  5. Instagram Reel: Resumable Upload → Container → Status-Polling → Publish
+  6. stockportal-listing.csv schreiben
   7. pending.json: status = "Meta Posted"
 
 Benötigte Umgebungsvariablen:
@@ -44,7 +50,13 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from config_loader import load_config, get_day_folder, normalize_name, load_listings_csv, atomic_write_json
+from config_loader import (
+    load_config,
+    get_day_folder,
+    atomic_write_json,
+    load_master_listings,
+    find_master_item,
+)
 
 # Import für Reel-Logging und Caption-Generierung
 sys.path.insert(0, str(Path(__file__).parent.parent / "publisher"))
@@ -130,17 +142,29 @@ def get_mockup_paths(article_folder: str | None) -> list[str]:
     return mockups if len(mockups) == 5 else []
 
 
-def find_csv_row(folder_name: str, csv_rows: list[dict]) -> dict | None:
-    """Findet CSV-Zeile via etsy_title-Vergleich (exakt, dann Teilstring)."""
-    norm_folder = normalize_name(folder_name)
-    for row in csv_rows:
-        if normalize_name(row.get("etsy_title", "")) == norm_folder:
-            return row
-    for row in csv_rows:
-        norm_title = normalize_name(row.get("etsy_title", ""))
-        if norm_folder in norm_title or norm_title in norm_folder:
-            return row
-    return None
+def write_stockportal_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
+    """
+    Schreibt stockportal-listing.csv fuer Adobe-Stock copy-paste.
+    Zwei Spalten: folder ; stock_tags (kommagetrennte Tag-Liste).
+    """
+    csv_path = day_folder / "stockportal-listing.csv"
+    try:
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["folder", "stock_tags"],
+                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
+            )
+            writer.writeheader()
+            for it in items:
+                writer.writerow({
+                    "folder":     it.get("folder", ""),
+                    "stock_tags": it.get("stock_tags", ""),
+                })
+        print(f"📋 stockportal-listing.csv geschrieben: {len(items)} Zeile(n).")
+        return csv_path
+    except Exception as e:
+        print(f"⚠️  stockportal-listing.csv konnte nicht geschrieben werden: {e}")
+        return None
 
 
 def assign_post_times(entries: list, post_times: list) -> list:
@@ -439,80 +463,9 @@ def _ig_reel_upload(video_path: Path, caption: str, dry_run: bool,
 
 
 # =============================================================================
-# PAUSE-MECHANISMUS
-# =============================================================================
-
-def _pause_for_payhip(day_folder: Path, video_entries: list) -> None:
-    """
-    Hält den Workflow an und wartet auf manuelle Payhip-Pflege durch den User.
-    Lock-Datei: <day_folder>/META_POST_PENDING.lock
-    """
-    lock_file = day_folder / "META_POST_PENDING.lock"
-
-    # Listings-CSV-Pfad ermitteln (für Anzeige)
-    csv_path = day_folder / "listings.csv"
-
-    try:
-        lock_file.parent.mkdir(parents=True, exist_ok=True)
-        lock_file.write_text(
-            "Meta-Post ausstehend.\n"
-            "Bitte Payhip-Produktseite pflegen (YouTube-Video einbetten).\n"
-            "Optional: promo_code in listings.csv eintragen.\n"
-            "Diese Datei löschen wenn fertig, dann ENTER drücken.\n",
-            encoding="utf-8"
-        )
-    except Exception as e:
-        print(f"❌ Konnte Lock-Datei nicht erstellen: {e}")
-        sys.exit(1)
-
-    print()
-    print("=" * 65)
-    print("⏸️  WORKFLOW PAUSIERT – PAYHIP-PFLEGE VOR META-POST")
-    print("=" * 65)
-    print()
-    print("Bitte erledige BEIDES bevor du fortsetzt:")
-    print()
-    print("  🛒  Payhip-Produktseite:")
-    print("      1. Payhip öffnen → Produkt bearbeiten")
-    print("      2. YouTube-Video-Link einbetten")
-    print("      3. Produktseite speichern")
-    print()
-    meta_csv_path = day_folder / "meta-listing.csv"
-    print("  🏷️  Promo-Code (optional):")
-    print(f"      4. meta-listing.csv öffnen: {meta_csv_path}")
-    print("      5. Spalte 'promo_code' für dieses Produkt füllen")
-    print("         (leer lassen = kein Promo-Text im Post)")
-    print()
-
-    print("  Produkte in dieser Runde:")
-    for e in video_entries:
-        print(f"   • {e.get('title', e.get('id', '?'))}")
-    print()
-    print(f"  🔓  Danach: Lock-Datei löschen ({lock_file.name})")
-    print("      und ENTER drücken")
-    print("=" * 65)
-
-    while True:
-        try:
-            input("\n⏳ Drücke ENTER wenn Payhip-Pflege abgeschlossen ist...")
-        except KeyboardInterrupt:
-            print("\n⚠️  Abgebrochen. Workflow gestoppt.")
-            sys.exit(1)
-
-        if lock_file.exists():
-            print()
-            print("⚠️  Lock-Datei existiert noch!")
-            print(f"   Bitte erst Payhip pflegen, dann Lock-Datei löschen:")
-            print(f"   {lock_file}")
-            print("   Danach ENTER drücken.")
-        else:
-            break
-
-    print()
-    print("✅ Payhip-Pflege bestätigt – Meta-Post wird vorbereitet.")
-    print()
-
-
+# (Pause-Mechanismus entfernt – Refactor-Punkt 7)
+# promo_code und Payhip-Pflege erfolgen bereits im Payhip-Approval-Gate
+# in Start_Scripts.py nach Step_09.
 # =============================================================================
 # HAUPTLOGIK
 # =============================================================================
@@ -566,30 +519,12 @@ def main():
         print("   Bitte zuerst Step 9 ausführen.")
         sys.exit(1)
 
-    # ── PAUSE – Payhip-Pflege abwarten ────────────────────────────────────────
-    if not DRYRUN:
-        _pause_for_payhip(day_folder, video_entries)
-
-    # ── listings.csv frisch laden (nach Pause, promo_code ggf. gesetzt) ───────
-    csv_path = day_folder / "listings.csv"
-    csv_rows = load_listings_csv(csv_path)
-    if not csv_rows:
-        print(f"⚠️  listings.csv nicht gefunden oder leer: {csv_path}")
-        print("   Posts werden ohne Promo-Code erstellt.")
-
-    # ── meta-listing.csv laden für promo_code (Ingo trägt dort den Code ein) ──
-    meta_csv_path = day_folder / "meta-listing.csv"
-    meta_rows = load_listings_csv(meta_csv_path)
-    if meta_rows:
-        # promo_code aus meta-listing.csv in csv_rows übertragen (Matching via etsy_title)
-        meta_promo_map = {
-            r.get("etsy_title", "").strip(): r.get("promo_code", "").strip()
-            for r in meta_rows
-        }
-        for row in csv_rows:
-            title = row.get("etsy_title", "").strip()
-            if title in meta_promo_map and meta_promo_map[title]:
-                row["promo_code"] = meta_promo_map[title]
+    # ── master-listings.json laden (SSoT nach Refactor Punkt 7) ──────────────
+    master = load_master_listings(day_folder)
+    master_items = master.get("items", [])
+    if not master_items:
+        print(f"⚠️  master-listings.json leer oder nicht vorhanden in {day_folder.name}.")
+        print("   Posts werden ohne Caption-Content erstellt.")
 
     # ── Posting-Zeiten zuweisen ───────────────────────────────────────────────
     scheduled_entries = assign_post_times(video_entries, POST_TIMES)
@@ -615,17 +550,15 @@ def main():
             failed.append({"title": title, "error": "video file not found"})
             continue
 
-        # CSV-Zeile und Caption
-        # Für den CSV-Abgleich marketing_title verwenden (enthält den Produktnamen),
-        # da title/id nur die interne ID wie "2026-03-26_002" ist.
-        csv_key = entry.get("marketing_title", title)
-        csv_row = find_csv_row(csv_key, csv_rows) if csv_rows else {}
-        if not csv_row:
-            print(f"   ⚠️  Keine CSV-Zeile gefunden für '{csv_key}' – Caption leer.")
-            csv_row = {}
+        # master-Item via id lookup (id-basiert, Refactor-Punkt 7)
+        entry_id = entry.get("id", "")
+        master_item = find_master_item(master, entry_id) if entry_id else None
+        if master_item is None:
+            print(f"   ⚠️  Kein master-Item mit id '{entry_id}' gefunden – Caption leer.")
+            master_item = {}
 
-        caption    = build_caption(csv_row)
-        promo_code = (csv_row.get("promo_code") or "").strip()
+        caption    = build_caption(master_item)
+        promo_code = (master_item.get("promo_code") or "").strip()
 
         print(f"   Caption: {caption[:80].replace(chr(10), ' ')}{'...' if len(caption) > 80 else ''}")
         if promo_code:
@@ -633,7 +566,7 @@ def main():
         else:
             print(f"   Promo-Code: keiner")
 
-        entry_result = {"title": title, "fb": None, "ig": None}
+        entry_result = {"id": entry_id, "title": title, "fb": None, "ig": None}
 
         # Facebook Reel
         if POST_FB and PAGE_ID:
@@ -666,8 +599,10 @@ def main():
             if HAVE_REPOST_LOGGER:
                 # Generiere Captions falls noch nicht vorhanden
                 captions = generate_captions(
-                    product_title=csv_row.get("etsy_title", title),
-                    etsy_description_en=csv_row.get("etsy_description_en", ""),
+                    product_title=(master_item.get("etsy_title")
+                                   or master_item.get("etsy_title_en")
+                                   or title),
+                    etsy_description_en=master_item.get("etsy_description_en", ""),
                 )
 
                 # Mockup-Pfade rekonstruieren
@@ -721,24 +656,29 @@ def main():
         for f in failed:
             print(f"   ✗ {f.get('title', '?')}")
 
-    # ── pending.json aktualisieren ────────────────────────────────────────────
+    # ── stockportal-listing.csv schreiben (Adobe-Stock copy-paste) ────────────
+    if master_items:
+        print()
+        write_stockportal_listing_csv(day_folder, master_items)
+
+    # ── pending.json aktualisieren (id-basiert) ───────────────────────────────
     if DRYRUN:
         print("🧪 DRY-RUN – pending.json nicht verändert.")
         return
 
-    posted_titles = {p["title"] for p in posted}
+    posted_ids = {p.get("id") for p in posted if p.get("id")}
     status_updated = False
 
     for entry in pending:
         if (entry.get("status") in ELIGIBLE_STATUSES
-                and entry.get("title", entry.get("id")) in posted_titles):
+                and entry.get("id") in posted_ids):
             entry["status"] = META_POSTED_STATUS
             entry["meta_posted_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             status_updated = True
 
     if status_updated:
         atomic_write_json(PENDING_FILE, pending)
-        print(f"💾 Status auf '{META_POSTED_STATUS}' gesetzt.")
+        print(f"💾 Status auf '{META_POSTED_STATUS}' gesetzt (id-basiert).")
 
 
 if __name__ == "__main__":
