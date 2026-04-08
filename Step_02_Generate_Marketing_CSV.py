@@ -5,18 +5,17 @@ Step_02_Generate_Marketing_CSV.py
 
 Marketing-Pipeline:
 - Nutzt Claude API (Modell steuerbar über claude_model_csv in config.yaml)
-- Erzeugt DREI CSV-Dateien + Plattform-Listings im Tagesordner:
-    1. metricool.csv            → Ein Feld pro Eintrag: Titel + Marketing-Text + Hashtags
-    2. listings.csv             → Strukturierte Felder (Gesamt-Quelle, bleibt für Kompatibilität)
-    3. listings-master.yaml     → Menschenlesbare Übersicht nach Plattform
-    4. payhip-listing.csv       → Payhip-spezifische Felder
-    5. youtube-listing.csv      → YouTube-spezifische Felder
-    6. etsy-listing.csv         → Etsy EN+DE Felder
-    7. meta-listing.csv         → Meta-Post Felder (promo_code leer – manuell eintragen)
-    8. stockportal-listing.csv  → Stock-Portal Felder
+- Erzeugt im Tagesordner:
+    1. metricool_HHMM.csv       → Ein Feld pro Eintrag: Titel + Marketing-Text + Hashtags
+    2. master-listings.json     → Single Source of Truth für alle Plattform-Daten (Refactor 2026-04)
+    3. listings.csv             → DEPRECATED Dual-Write bis Step_06/08/10/11 auf JSON umgestellt sind
+                                  (Reihenfolge-Punkt 6 im Refactor-Plan). Danach ersatzlos entfernen.
+- Plattform-Listings (payhip/etsy/meta/stockportal/canva/facebook) entstehen NICHT mehr hier,
+  sondern verteilt in Step_05/06/08/10/11 — siehe Session-Log 2026-04-07.
 - Setzt Status auf "CSV generated" und speichert zurück in prompts_pending.json.
+- master-listings.json wird MERGED: bestehende Items bleiben, neue per id ergänzt,
+  Kollisionen per id überschreiben das alte Item (sollte dank HHMM-ID nicht vorkommen).
 - Dry-Run: keine Dateien, nur Simulation.
-- Config-Flags: open_listings_excel, open_platform_listings_excel
 """
 
 import sys
@@ -29,15 +28,13 @@ import time
 import anthropic
 from pathlib import Path
 
-# PyYAML für listings-master.yaml
-try:
-    import yaml
-except ImportError:
-    print("❌ PyYAML fehlt. Bitte installieren:")
-    print("   pip install pyyaml")
-    sys.exit(1)
-
-from config_loader import load_config, get_day_folder
+from config_loader import (
+    load_config,
+    get_day_folder,
+    load_master_listings,
+    save_master_listings,
+    MASTER_LISTINGS_SCHEMA_VERSION,
+)
 
 cfg    = load_config()
 config = cfg["config"]
@@ -62,9 +59,6 @@ except Exception:
 flags       = cfg["get_script_flags"]("csv")
 RUN_ENABLED = bool(flags["run"])
 DRYRUN      = bool(flags["dry_run"])
-
-OPEN_LISTINGS_EXCEL          = bool(config.get("open_listings_excel",          True))
-OPEN_PLATFORM_LISTINGS_EXCEL = bool(config.get("open_platform_listings_excel", True))
 
 # Feste Shop-Links
 PAYHIP_LINK = "payhip.com/digipicshop"
@@ -243,170 +237,56 @@ def truncate_tag(tag: str, max_chars: int) -> str:
     last_space = truncated.rfind(' ')
     return truncated[:last_space] if last_space > 0 else truncated
 
-# === PLATFORM LISTING HELPERS ===
+# === MASTER-LISTINGS HELPER ===
 
-def write_platform_csv(path: Path, fieldnames: list, rows: list) -> None:
-    """Schreibt Plattform-CSV mit Semikolon-Trennung, UTF-8-BOM, QUOTE_ALL."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";", quoting=csv.QUOTE_ALL)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_master_yaml(path: Path, data: dict) -> None:
-    """Schreibt listings-master.yaml (UTF-8, keine BOM)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        f.write("# Plattform-Listings – generiert aus listings.csv\n")
-        f.write("# Menschenlesbare Übersicht über alle Produkte nach Plattform\n\n")
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-
-def open_file(path: Path) -> None:
-    """Öffnet eine Datei im Standardprogramm (Excel für CSV)."""
-    try:
-        import subprocess, winreg
-        excel_exe = None
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\excel.exe") as k:
-                excel_exe, _ = winreg.QueryValueEx(k, "")
-        except OSError:
-            pass
-        if excel_exe:
-            subprocess.Popen([excel_exe, str(path)])
-        else:
-            os.startfile(str(path))
-        print(f"📊 {path.name} geöffnet.")
-    except Exception as e:
-        print(f"⚠️  Konnte {path.name} nicht öffnen: {e}")
-
-
-def generate_platform_listings(rows: list, day_folder: Path, dryrun: bool = False) -> None:
+def build_master_item(entry_id: str, content: dict) -> dict:
     """
-    Generiert alle Plattform-Listing-Dateien aus einer Liste von Dicts.
-    Erwartet Felder: etsy_title, etsy_title_en, etsy_title_de,
-                     etsy_description_en, etsy_description_de,
-                     etsy_tags_en, etsy_tags_de, stock_tags,
-                     short_line_en, short_line_de, social_hashtags,
-                     promo_code (leer), youtube_url (leer)
+    Baut ein master-listings.json Item aus einer entry-id und dem
+    content-Dict aus generate_all_content(). Felder, die erst später
+    befüllt werden (folder, *_url, payhip_product_link, promo_code),
+    starten als null bzw. leerer String.
     """
-    if not rows:
-        print("⚠️  Keine Rows für Plattform-Listings – übersprungen.")
-        return
-
-    # --- Payhip ---
-    payhip_rows = []
-    for row in rows:
-        etsy_title = row.get("etsy_title", "").strip()
-        payhip_rows.append({
-            "title":           f"Set of 5 {etsy_title} | 4K Wallpaper Digital Download" if etsy_title else "",
-            "youtube_url":     row.get("youtube_url", ""),
-            "marketing_text":  row.get("etsy_description_en", "").strip(),
-            "ai_disclosure":   "AI-crafted with a human touch ✨",
-        })
-
-    # --- YouTube ---
-    youtube_rows = []
-    for row in rows:
-        title_base = row.get("etsy_title_en", row.get("etsy_title", "Wallpaper")).strip()
-        yt_title = f"{title_base} | AI Art | 4K Wallpaper #AIWallpaper"[:100]
-        youtube_rows.append({
-            "title":           yt_title,
-            "social_hashtags": row.get("social_hashtags", "").strip(),
-        })
-
-    # --- Etsy ---
-    etsy_rows = []
-    for row in rows:
-        etsy_rows.append({
-            "etsy_title_en":       row.get("etsy_title_en", "").strip(),
-            "etsy_title_de":       row.get("etsy_title_de", "").strip(),
-            "etsy_description_en": row.get("etsy_description_en", "").strip(),
-            "etsy_description_de": row.get("etsy_description_de", "").strip(),
-            "etsy_tags_en":        row.get("etsy_tags_en", "").strip(),
-            "etsy_tags_de":        row.get("etsy_tags_de", "").strip(),
-            "short_line_en":       row.get("short_line_en", "").strip(),
-            "short_line_de":       row.get("short_line_de", "").strip(),
-        })
-
-    # --- Meta ---
-    meta_rows = []
-    for row in rows:
-        meta_rows.append({
-            "etsy_title":          row.get("etsy_title", "").strip(),
-            "etsy_description_en": row.get("etsy_description_en", "").strip(),
-            "social_hashtags":     row.get("social_hashtags", "").strip(),
-            "promo_code":          row.get("promo_code", ""),  # Ingo trägt manuell ein
-        })
-
-    # --- Stockportal ---
-    stock_rows = []
-    for row in rows:
-        stock_rows.append({
-            "marketing_title": row.get("etsy_title", "").strip(),
-            "stock_tags":      row.get("stock_tags", "").strip(),
-        })
-
-    # --- Master YAML ---
-    master = {"platform_listings": {"payhip": [], "youtube": [], "etsy": [], "meta": [], "stockportal": []}}
-    for idx, row in enumerate(rows, 1):
-        etsy_title = row.get("etsy_title", f"Product {idx}").strip()
-        title_base = row.get("etsy_title_en", etsy_title).strip()
-        master["platform_listings"]["payhip"].append({
-            "index": idx, "title": f"Set of 5 {etsy_title} | 4K Wallpaper Digital Download",
-            "youtube_url": row.get("youtube_url", ""),
-        })
-        master["platform_listings"]["youtube"].append({
-            "index": idx, "title": f"{title_base} | AI Art | 4K Wallpaper #AIWallpaper"[:100],
-            "hashtags": row.get("social_hashtags", "").strip(),
-        })
-        master["platform_listings"]["etsy"].append({
-            "index": idx, "title_en": row.get("etsy_title_en", "").strip(),
-            "title_de": row.get("etsy_title_de", "").strip(),
-        })
-        master["platform_listings"]["meta"].append({
-            "index": idx, "title": etsy_title,
-            "promo_code": row.get("promo_code", "").strip() or "(Ingo trägt ein)",
-        })
-        master["platform_listings"]["stockportal"].append({
-            "index": idx, "marketing_title": etsy_title,
-            "tags": row.get("stock_tags", "").strip(),
-        })
-
-    # --- Ausgabe ---
-    output_files = {
-        "payhip-listing.csv":      (["title", "youtube_url", "marketing_text", "ai_disclosure"],    payhip_rows),
-        "youtube-listing.csv":     (["title", "social_hashtags"],                                   youtube_rows),
-        "etsy-listing.csv":        (["etsy_title_en", "etsy_title_de", "etsy_description_en",
-                                     "etsy_description_de", "etsy_tags_en", "etsy_tags_de",
-                                     "short_line_en", "short_line_de"],                             etsy_rows),
-        "meta-listing.csv":        (["etsy_title", "etsy_description_en", "social_hashtags",
-                                     "promo_code"],                                                  meta_rows),
-        "stockportal-listing.csv": (["marketing_title", "stock_tags"],                              stock_rows),
+    return {
+        "id":                  entry_id,
+        "marketing_title":     content["folder_title"],
+        "folder":              "",  # wird in Step_05/06 beim Image-Rename gesetzt
+        "etsy_title":          content["etsy_title"],
+        "etsy_title_en":       content["etsy_title_en"],
+        "etsy_title_de":       content["etsy_title_de"],
+        "etsy_description_en": content["etsy_en"],
+        "etsy_description_de": content["etsy_de"],
+        "etsy_tags_en":        content["etsy_tags_en"],
+        "etsy_tags_de":        content["etsy_tags_de"],
+        "short_line_en":       content["short_line_en"],
+        "short_line_de":       content["short_line_de"],
+        "social_hashtags":     content["social_hashtags"],
+        "stock_tags":          content["stock_tags"],
+        "youtube_url":         None,   # wird in Step_08 gesetzt
+        "payhip_product_link": None,   # wird im Approval Gate gesetzt
+        "promo_code":          None,   # wird im Approval Gate gesetzt
+        "etsy_url":            None,   # wird in Step_10 gesetzt
     }
 
-    if dryrun:
-        print("\n🔍 DRY-RUN: Plattform-Listings würden geschrieben (nicht wirklich):")
-        for filename in output_files:
-            print(f"   • {day_folder / filename}")
-        print(f"   • {day_folder / 'listings-master.yaml'}")
-        return
 
-    print("\n✍️  Schreibe Plattform-Listings:")
-    for filename, (fieldnames, rows_data) in output_files.items():
-        out_path = day_folder / filename
-        write_platform_csv(out_path, fieldnames, rows_data)
-        print(f"   ✓ {filename} ({len(rows_data)} Zeilen)")
-
-    master_path = day_folder / "listings-master.yaml"
-    write_master_yaml(master_path, master)
-    print(f"   ✓ listings-master.yaml")
-
-    if OPEN_PLATFORM_LISTINGS_EXCEL:
-        for filename in output_files:
-            open_file(day_folder / filename)
+def merge_master_items(existing: list, new_items: list) -> list:
+    """
+    Mergt neue Items in eine bestehende Item-Liste.
+    - Items mit neuer id werden angehängt.
+    - Items mit bereits vorhandener id überschreiben das alte Item
+      (sollte dank HHMM in der id nicht vorkommen, ist aber idempotent).
+    Reihenfolge: bestehende Items bleiben an Ort und Stelle, neue werden
+    am Ende angefügt.
+    """
+    by_id = {it.get("id"): idx for idx, it in enumerate(existing)}
+    merged = list(existing)
+    for item in new_items:
+        item_id = item.get("id")
+        if item_id in by_id:
+            merged[by_id[item_id]] = item
+        else:
+            by_id[item_id] = len(merged)
+            merged.append(item)
+    return merged
 
 
 # === CONTENT GENERATOR ===
@@ -569,7 +449,7 @@ def main():
     prompt_generated_status = STATUSES.get("prompt_generated", "Prompt Generated")
     csv_generated_status    = STATUSES.get("csv_generated",    "CSV generated")
 
-    metricool_rows, listings_rows, listings_dicts, processed = [], [], [], 0
+    metricool_rows, listings_rows, new_master_items, processed = [], [], [], 0
 
     for entry in pending:
         target_status = sim_status if DRYRUN else prompt_generated_status
@@ -590,29 +470,18 @@ def main():
                 content["etsy_title"],
                 content["etsy_title_de"],
                 content["etsy_title_en"],
-                "",  # promo_code – manuell vor Meta-Post eintragen (optional)
+                "",  # promo_code – wird später im Approval Gate eingetragen
             ])
-            # Für Plattform-Listings als Dict (Felder wie in listings.csv-Header)
-            listings_dicts.append({
-                "stock_tags":          content["stock_tags"],
-                "social_hashtags":     content["social_hashtags"],
-                "etsy_tags_en":        content["etsy_tags_en"],
-                "short_line_en":       content["short_line_en"],
-                "etsy_description_en": content["etsy_en"],
-                "etsy_tags_de":        content["etsy_tags_de"],
-                "short_line_de":       content["short_line_de"],
-                "etsy_description_de": content["etsy_de"],
-                "etsy_title":          content["etsy_title"],
-                "etsy_title_de":       content["etsy_title_de"],
-                "etsy_title_en":       content["etsy_title_en"],
-                "promo_code":          "",
-                "youtube_url":         "",  # wird später von Step_08 befüllt
-            })
+            # Master-listings.json Item (Single Source of Truth)
+            entry_id = entry.get("id")
+            if not entry_id:
+                raise ValueError("Eintrag hat keine id – Step_01 muss zuerst laufen.")
+            new_master_items.append(build_master_item(entry_id, content))
             if not DRYRUN:
                 entry["status"]          = csv_generated_status
                 entry["marketing_title"] = content["folder_title"]
             processed += 1
-            print(f"✅ Eintrag {entry.get('id')} verarbeitet: '{content['folder_title']}'")
+            print(f"✅ Eintrag {entry_id} verarbeitet: '{content['folder_title']}'")
         except Exception as e:
             print(f"⚠️ Fehler bei Eintrag {entry.get('id')}: {e}")
 
@@ -667,11 +536,20 @@ def main():
             print(f"❌ Schreiben von {listings_file} fehlgeschlagen: {e}")
             sys.exit(1)
 
-    if OPEN_LISTINGS_EXCEL:
-        open_file(listings_file)
-
-    # === PLATTFORM-LISTINGS GENERIEREN ===
-    generate_platform_listings(listings_dicts, day_folder, dryrun=DRYRUN)
+    # === MASTER-LISTINGS.JSON (Single Source of Truth) ===
+    # Merge: bestehende Items behalten, neue per id anhängen bzw. überschreiben.
+    try:
+        master = load_master_listings(day_folder)
+        master["schema_version"] = MASTER_LISTINGS_SCHEMA_VERSION
+        master["day_folder"]     = str(day_folder)
+        master["run_date"]       = TARGET_DATE.strftime(DATE_FORMAT) if hasattr(TARGET_DATE, "strftime") else str(TARGET_DATE)
+        master["items"]          = merge_master_items(master.get("items", []), new_master_items)
+        save_master_listings(day_folder, master)
+        print(f"🗂️  master-listings.json geschrieben ({len(new_master_items)} neu, "
+              f"{len(master['items'])} gesamt): {day_folder / 'master-listings.json'}")
+    except Exception as e:
+        print(f"❌ Schreiben von master-listings.json fehlgeschlagen: {e}")
+        sys.exit(1)
 
     # === STAGING-ISOLATION: Remap day_folder/folder zu Staging-Temp-Ordner ===
     # Dies ist WICHTIG: Nachfolgende Steps (03, 07a) müssen den korrekten Staging-Pfad sehen
