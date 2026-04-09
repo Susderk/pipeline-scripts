@@ -11,17 +11,25 @@ Refactor-Punkt 7 (master-listings.json als SSoT):
   - Payhip-Pause entfernt: promo_code + YT-Einbettung erfolgen bereits im
     Payhip-Approval-Gate (Start_Scripts.py) nach Step_09
   - meta-listing.csv wird NICHT mehr erzeugt (alle Infos im master)
-  - stockportal-listing.csv wird NEU erzeugt (folder;stock_tags fuer
-    Adobe-Stock copy-paste)
+
+Seit 2026-04-09 ist Step_11 alleiniger Schreiber von
+  • etsy-listing.csv     (DE+EN Content fuer manuelles Etsy-Listing-Backup)
+  • facebook-listing.csv (Commerce-Manager-Import, EN-only, Festwerte)
+  • stockportal-listing.csv (Adobe-Stock copy-paste)
+Die drei CSVs werden GANZ AM ANFANG von main() geschrieben – vor allen
+Early-Exits (META_ACCESS_TOKEN fehlt, meta nicht in run_scripts, keine
+video_entries). Grund: Step_10 wird bei fehlenden Etsy-Keys uebersprungen
+und hat die CSV-Erzeugung deshalb nicht mehr zuverlaessig geliefert.
 
 Ablauf:
-  1. Alle pending.json-Eintraege mit status in ELIGIBLE_STATUSES suchen
-  2. master-listings.json laden
-  3. Caption bauen: etsy_description_en + ggf. Promo-Text + CTA + Hashtags
-  4. Facebook Reel: Dreiphasiger Upload (start → Bytes → finish → publish)
-  5. Instagram Reel: Resumable Upload → Container → Status-Polling → Publish
-  6. stockportal-listing.csv schreiben
-  7. pending.json: status = "Meta Posted"
+  1. Tagesordner bestimmen, master-listings.json laden
+  2. etsy-listing.csv, facebook-listing.csv, stockportal-listing.csv schreiben
+  3. Env-Vars / run_scripts pruefen (ggf. Early-Exit NACH den CSVs)
+  4. Alle pending.json-Eintraege mit status in ELIGIBLE_STATUSES suchen
+  5. Caption bauen: etsy_description_en + ggf. Promo-Text + CTA + Hashtags
+  6. Facebook Reel: Dreiphasiger Upload (start → Bytes → finish → publish)
+  7. Instagram Reel: Resumable Upload → Container → Status-Polling → Publish
+  8. pending.json: status = "Meta Posted"
 
 Benötigte Umgebungsvariablen:
   META_ACCESS_TOKEN    – Meta Page Access Token
@@ -98,6 +106,21 @@ PROMO_TEXTS  = config.get("promo_texts", [
 POST_TIMES   = config.get("meta_post_times", ["12:00", "18:00"])
 SHOP_CTA     = config.get("shop_cta", "")  # Shop-CTA für Meta-Posts
 
+# Festwerte fuer facebook-listing.csv (Commerce-Manager-Import)
+FB_PRICE        = "2,99"
+FB_AVAILABILITY = "auf Lager"
+FB_CONDITION    = "neu"
+
+ETSY_CSV_FIELDS = [
+    "title_de", "description_de", "short_line_de", "tags_de",
+    "title_en", "description_en", "short_line_en", "tags_en",
+]
+
+FB_CSV_FIELDS = [
+    "product_id", "video_link_github", "title", "price",
+    "payhip_link", "availability", "condition", "description",
+]
+
 ELIGIBLE_STATUSES  = {
     STATUSES.get("etsy_listed", "Etsy Listed"),  # Normalfall: Etsy-Step hat gelaufen
     STATUSES.get("upscaled",    "Upscaled"),     # Fallback: Upscaling gelaufen, Etsy übersprungen
@@ -140,6 +163,72 @@ def get_mockup_paths(article_folder: str | None) -> list[str]:
             mockups.append(str(mockup_file))
 
     return mockups if len(mockups) == 5 else []
+
+
+def write_etsy_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
+    """
+    Schreibt etsy-listing.csv (Content-Backup, DE+EN).
+    Bewusst KEIN id/folder/listing_id/etsy_url – nur Content-Felder.
+    """
+    csv_path = day_folder / "etsy-listing.csv"
+    try:
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=ETSY_CSV_FIELDS,
+                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
+            )
+            writer.writeheader()
+            for it in items:
+                writer.writerow({
+                    "title_de":        it.get("etsy_title_de") or it.get("etsy_title", ""),
+                    "description_de":  it.get("etsy_description_de", ""),
+                    "short_line_de":   it.get("short_line_de", ""),
+                    "tags_de":         it.get("etsy_tags_de", ""),
+                    "title_en":        it.get("etsy_title_en") or it.get("etsy_title", ""),
+                    "description_en":  it.get("etsy_description_en", ""),
+                    "short_line_en":   it.get("short_line_en", ""),
+                    "tags_en":         it.get("etsy_tags_en", ""),
+                })
+        print(f"📋 etsy-listing.csv geschrieben: {len(items)} Zeile(n).")
+        return csv_path
+    except Exception as e:
+        print(f"⚠️  etsy-listing.csv konnte nicht geschrieben werden: {e}")
+        return None
+
+
+def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
+    """
+    Schreibt facebook-listing.csv (Commerce-Manager-Import, EN-only, Festwerte).
+    Spalten: product_id | video_link_github | title | price | payhip_link |
+             availability | condition | description
+    Wird NICHT in Excel geoeffnet (manueller Import in Commerce Manager).
+    Auch Items ohne payhip_product_link / video_github_url werden geschrieben
+    (Commerce-Manager-Validierung uebernimmt der User).
+    """
+    csv_path = day_folder / "facebook-listing.csv"
+    try:
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=FB_CSV_FIELDS,
+                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
+            )
+            writer.writeheader()
+            for it in items:
+                writer.writerow({
+                    "product_id":        it.get("id", ""),
+                    "video_link_github": it.get("video_github_url") or "",
+                    "title":             it.get("etsy_title_en") or it.get("etsy_title", ""),
+                    "price":             FB_PRICE,
+                    "payhip_link":       it.get("payhip_product_link") or "",
+                    "availability":      FB_AVAILABILITY,
+                    "condition":         FB_CONDITION,
+                    "description":       it.get("etsy_description_en") or "",
+                })
+        print(f"📋 facebook-listing.csv geschrieben: {len(items)} Zeile(n).")
+        return csv_path
+    except Exception as e:
+        print(f"⚠️  facebook-listing.csv konnte nicht geschrieben werden: {e}")
+        return None
 
 
 def write_stockportal_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
@@ -473,6 +562,30 @@ def _ig_reel_upload(video_path: Path, caption: str, dry_run: bool,
 def main():
     print("[Step 11 – Meta Video Post] wird gestartet...")
 
+    # ── Tagesordner + master-listings.json laden (VOR allen Early-Exits) ─────
+    # Die drei Content-CSVs (etsy, facebook, stockportal) werden hier ganz am
+    # Anfang geschrieben, damit sie auch dann entstehen, wenn der Meta-Post
+    # selbst uebersprungen wird (META_ACCESS_TOKEN fehlt, meta deaktiviert,
+    # keine video_entries).
+    day_folder = get_day_folder(str(IMAGES_PATH), DATE_FORMAT, cfg["TARGET_DATE"])
+    master_items: list = []
+    if not day_folder.exists():
+        print(f"⚠️  Tagesordner nicht gefunden: {day_folder}")
+        print("   CSV-Erzeugung wird uebersprungen.")
+        master = {"items": []}
+    else:
+        master = load_master_listings(day_folder)
+        master_items = master.get("items", [])
+        if not master_items:
+            print(f"⚠️  master-listings.json leer oder nicht vorhanden in {day_folder.name}.")
+            print("   CSV-Erzeugung wird uebersprungen.")
+        else:
+            print(f"\n📋 Schreibe Content-CSVs aus master-listings.json ({len(master_items)} Item(s))...")
+            write_etsy_listing_csv(day_folder, master_items)
+            write_facebook_listing_csv(day_folder, master_items)
+            write_stockportal_listing_csv(day_folder, master_items)
+            print()
+
     # ── Env-Vars prüfen ───────────────────────────────────────────────────────
     if not META_TOKEN:
         print("ℹ️  META_ACCESS_TOKEN nicht gesetzt – Step 12 wird übersprungen.")
@@ -512,19 +625,11 @@ def main():
     for e in video_entries:
         print(f"   • {e.get('title', e.get('id', '?'))}  →  {Path(e['video_path']).name}")
 
-    # ── Tagesordner bestimmen (konsistent via config, wie alle anderen Steps) ──
-    day_folder = get_day_folder(str(IMAGES_PATH), DATE_FORMAT, cfg["TARGET_DATE"])
+    # (Tagesordner + master-listings.json wurden bereits am Anfang geladen.)
     if not day_folder.exists():
         print(f"❌ Tagesordner nicht gefunden: {day_folder}")
         print("   Bitte zuerst Step 9 ausführen.")
         sys.exit(1)
-
-    # ── master-listings.json laden (SSoT nach Refactor Punkt 7) ──────────────
-    master = load_master_listings(day_folder)
-    master_items = master.get("items", [])
-    if not master_items:
-        print(f"⚠️  master-listings.json leer oder nicht vorhanden in {day_folder.name}.")
-        print("   Posts werden ohne Caption-Content erstellt.")
 
     # ── Posting-Zeiten zuweisen ───────────────────────────────────────────────
     scheduled_entries = assign_post_times(video_entries, POST_TIMES)
@@ -656,10 +761,7 @@ def main():
         for f in failed:
             print(f"   ✗ {f.get('title', '?')}")
 
-    # ── stockportal-listing.csv schreiben (Adobe-Stock copy-paste) ────────────
-    if master_items:
-        print()
-        write_stockportal_listing_csv(day_folder, master_items)
+    # (stockportal-listing.csv wird bereits am Anfang von main() geschrieben.)
 
     # ── pending.json aktualisieren (id-basiert) ───────────────────────────────
     if DRYRUN:

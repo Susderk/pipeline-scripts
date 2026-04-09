@@ -3,11 +3,13 @@
 """
 Step_10_List_On_Etsy.py
 
-Erstellt Etsy-Listings (Entwürfe) aus master-listings.json des Tagesordners
-und schreibt zwei Content-Exporte:
+Erstellt Etsy-Listings (Entwürfe) aus master-listings.json des Tagesordners.
 
-  • etsy-listing.csv     (DE+EN Content fuer manuelles Etsy-Listing-Backup)
-  • facebook-listing.csv (Commerce-Manager-Import, EN-only, mit Festwerten)
+Die Content-Exporte etsy-listing.csv und facebook-listing.csv werden seit
+dem 2026-04-09 nicht mehr hier erzeugt, sondern am Anfang von Step_11.
+Grund: Step_10 wird bei fehlenden Etsy-Keys übersprungen, Step_11 läuft
+unabhängig davon und hat durch Step_09 (video_github_url) dieselbe oder
+eine vollständigere Datenlage.
 
 Refactor-Punkt 6 (master-listings.json als SSoT):
   - Reader: master-listings.json (kein listings.csv mehr)
@@ -38,7 +40,6 @@ Hinweis zu digitalen Produkten:
 import sys
 import os
 import json
-import csv
 import re
 import time
 from pathlib import Path
@@ -93,11 +94,6 @@ ETSY_LISTED_FILE   = JSON_PATH / "uploaded_to_etsy.json"
 
 YOUTUBE_STATUS     = STATUSES.get("youtube_done", "YouTube Done")
 ETSY_STATUS        = STATUSES.get("etsy_listed",  "Etsy Listed")
-
-# Festwerte fuer facebook-listing.csv (Commerce-Manager-Import)
-FB_PRICE        = "2,99"
-FB_AVAILABILITY = "auf Lager"
-FB_CONDITION    = "neu"
 
 
 # ─────────────────────────────────────────────
@@ -241,87 +237,6 @@ def create_etsy_listing(title: str, description: str, tags: list) -> dict | None
 
 
 # ─────────────────────────────────────────────
-# CSV-Exporte
-# ─────────────────────────────────────────────
-
-ETSY_CSV_FIELDS = [
-    "title_de", "description_de", "short_line_de", "tags_de",
-    "title_en", "description_en", "short_line_en", "tags_en",
-]
-
-FB_CSV_FIELDS = [
-    "product_id", "video_link_github", "title", "price",
-    "payhip_link", "availability", "condition", "description",
-]
-
-
-def write_etsy_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
-    """
-    Schreibt etsy-listing.csv (Content-Backup, DE+EN).
-    Bewusst KEIN id/folder/listing_id/etsy_url – nur Content-Felder.
-    """
-    csv_path = day_folder / "etsy-listing.csv"
-    try:
-        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=ETSY_CSV_FIELDS,
-                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
-            )
-            writer.writeheader()
-            for it in items:
-                writer.writerow({
-                    "title_de":        it.get("etsy_title_de") or it.get("etsy_title", ""),
-                    "description_de":  it.get("etsy_description_de", ""),
-                    "short_line_de":   it.get("short_line_de", ""),
-                    "tags_de":         it.get("etsy_tags_de", ""),
-                    "title_en":        it.get("etsy_title_en") or it.get("etsy_title", ""),
-                    "description_en":  it.get("etsy_description_en", ""),
-                    "short_line_en":   it.get("short_line_en", ""),
-                    "tags_en":         it.get("etsy_tags_en", ""),
-                })
-        print(f"   📋 etsy-listing.csv geschrieben: {len(items)} Zeile(n).")
-        return csv_path
-    except Exception as e:
-        print(f"   ⚠️  etsy-listing.csv konnte nicht geschrieben werden: {e}")
-        return None
-
-
-def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
-    """
-    Schreibt facebook-listing.csv (Commerce-Manager-Import, EN-only, Festwerte).
-    Spalten: product_id | video_link_github | title | price | payhip_link |
-             availability | condition | description
-    Wird NICHT in Excel geoeffnet (manueller Import in Commerce Manager).
-    Auch Items ohne payhip_product_link / video_github_url werden geschrieben
-    (Commerce-Manager-Validierung uebernimmt der User).
-    """
-    csv_path = day_folder / "facebook-listing.csv"
-    try:
-        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=FB_CSV_FIELDS,
-                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
-            )
-            writer.writeheader()
-            for it in items:
-                writer.writerow({
-                    "product_id":        it.get("id", ""),
-                    "video_link_github": it.get("video_github_url") or "",
-                    "title":             it.get("etsy_title_en") or it.get("etsy_title", ""),
-                    "price":             FB_PRICE,
-                    "payhip_link":       it.get("payhip_product_link") or "",
-                    "availability":      FB_AVAILABILITY,
-                    "condition":         FB_CONDITION,
-                    "description":       it.get("etsy_description_en") or "",
-                })
-        print(f"   📋 facebook-listing.csv geschrieben: {len(items)} Zeile(n).")
-        return csv_path
-    except Exception as e:
-        print(f"   ⚠️  facebook-listing.csv konnte nicht geschrieben werden: {e}")
-        return None
-
-
-# ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
 
@@ -329,12 +244,11 @@ def main():
     print("[Step 10 – Etsy Listing] wird gestartet...")
 
     # ── API-Verfuegbarkeit pruefen ───────────────────────────────────────────
-    # Fehlende Keys/Tokens brechen den Schritt NICHT ab. Der Schritt laeuft
-    # weiter und erzeugt zumindest die Content-CSVs (etsy-listing.csv +
-    # facebook-listing.csv). Nur der eigentliche API-Upload (Listing-Erstellung,
-    # Tracker, etsy_url/listing_id Write-Back) wird uebersprungen.
-    # Grund: Etsy-Developer-Approval liegt noch nicht vor; bis dahin laeuft
-    # Step_10 "blind" mit.
+    # Fehlende Keys/Tokens brechen den Schritt NICHT ab – der Schritt wird
+    # sauber uebersprungen. Grund: Etsy-Developer-Approval liegt noch nicht
+    # vor; bis dahin ist Step_10 ein No-Op. Die Content-CSVs (etsy-listing.csv
+    # + facebook-listing.csv) werden seit 2026-04-09 am Anfang von Step_11
+    # aus master-listings.json erzeugt, unabhaengig vom Etsy-API-Status.
     missing = []
     if not ETSY_API_KEY:      missing.append("ETSY_API_KEY")
     if not ETSY_ACCESS_TOKEN: missing.append("ETSY_ACCESS_TOKEN")
@@ -344,8 +258,9 @@ def main():
     if not etsy_api_available:
         print()
         print("ℹ️  Etsy-API nicht verfuegbar – fehlende Werte: " + ", ".join(missing))
-        print("    → API-Upload wird uebersprungen, CSV-Exporte laufen normal.")
+        print("    → Step_10 wird uebersprungen. CSVs erzeugt Step_11.")
         print()
+        return
 
     # ── Zieldatum & Tagesordner ──────────────────────────────────────────────
     target_date = cfg["TARGET_DATE"]
@@ -408,28 +323,13 @@ def main():
             print(f"\n   📦 [{j['id']}] {j['title']}")
             print(f"   Beschreibung: {j['description'][:80].replace(chr(10), ' ')}...")
             print(f"   Tags ({len(j['tags'])}): {', '.join(j['tags'])}")
-        # Im DRY-RUN trotzdem die Content-CSVs erzeugen (kein API-Call noetig)
-        print()
-        write_etsy_listing_csv(day_folder, items)
-        write_facebook_listing_csv(day_folder, items)
         print(f"\n{'='*52}")
         print("🧪 DRY-RUN abgeschlossen.")
         return
 
-    # ── Etsy-Listings erstellen (nur wenn API verfuegbar) ────────────────────
+    # ── Etsy-Listings erstellen ──────────────────────────────────────────────
     listed: list = []
     failed: list = []
-
-    if not etsy_api_available:
-        print("\n⏭️  API-Upload uebersprungen (Keys/Tokens fehlen).")
-        print("    master-listings.json bleibt bei etsy_url/listing_id unveraendert.")
-        print()
-        write_etsy_listing_csv(day_folder, items)
-        write_facebook_listing_csv(day_folder, items)
-        print(f"\n{'='*52}")
-        print("✅ Step 10 abgeschlossen (blind / nur CSV-Export).")
-        print(f"{'='*52}")
-        return
 
     etsy_tracker = load_etsy_tracker()
 
@@ -507,11 +407,6 @@ def main():
     except Exception as e:
         print(f"❌ master-listings.json konnte nicht geschrieben werden: {e}")
         sys.exit(1)
-
-    # ── Content-Exporte (etsy + facebook) ────────────────────────────────────
-    print()
-    write_etsy_listing_csv(day_folder, items)
-    write_facebook_listing_csv(day_folder, items)
 
     # ── Status in pending.json aktualisieren (id-basiert) ────────────────────
     if not PENDING_FILE.exists():
