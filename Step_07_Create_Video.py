@@ -29,7 +29,13 @@ import textwrap
 from pathlib import Path
 from datetime import datetime
 
-from config_loader import load_config
+from config_loader import (
+    load_config,
+    load_master_listings,
+    save_master_listings,
+    find_master_item,
+    update_master_item,
+)
 
 # === CONFIG ===
 cfg = load_config()
@@ -521,21 +527,51 @@ def main():
         video_status    = STATUSES.get("video_done", "Video Done")
         status_updated  = False
 
+        # Lade master-listings.json für master-Update
+        try:
+            master = load_master_listings(day_folder)
+            master_updated = False
+        except Exception:
+            master = None
+            master_updated = False
+
         for entry in pending:
             if entry.get("status") == renamed_status:
+                entry_id = entry.get("id", "")
                 folder_path = entry.get("folder", "")
-                folder_name = Path(folder_path).name if folder_path else ""
-                matching    = [v for v in videos_created if folder_name in v] if folder_name else videos_created
-                if matching:
-                    entry["status"]     = video_status
-                    entry["video_path"] = matching[0]
-                    status_updated      = True
+
+                # ID-basiertes Matching: finde Video nach entry.id
+                if entry_id and folder_path:
+                    # Das Video lebt in <folder_path>/safe_name.mp4
+                    # Matching: folder_path muss mit Video-Pfad-Prefix übereinstimmen
+                    matching = [v for v in videos_created if str(folder_path) in v]
+
+                    if matching:
+                        entry["status"]     = video_status
+                        entry["video_path"] = matching[0]
+                        status_updated      = True
+
+                        # Update master-listings.json mit video_path
+                        if master:
+                            item = find_master_item(master, entry_id)
+                            if item:
+                                item["video_path"] = matching[0]
+                                master_updated = True
 
         if status_updated:
             atomic_write_json(PENDING_FILE, pending)
             print(f"\n💾 Status auf '{video_status}' gesetzt.")
         else:
             print(f"\nℹ️ Keine passenden Einträge für Statusänderung gefunden.")
+
+        # Persistiere master-listings.json wenn aktualisiert
+        if master and master_updated:
+            try:
+                save_master_listings(day_folder, master)
+                print(f"   🗂️  master-listings.json aktualisiert (video_path).")
+            except Exception as e:
+                print(f"   ⚠️  master-listings.json konnte nicht aktualisiert werden: {e}")
+
     except Exception as e:
         print(f"⚠️ Konnte pending.json nicht aktualisieren: {e}")
 

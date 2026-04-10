@@ -43,6 +43,7 @@ from config_loader import (
     get_day_folder,
     load_master_listings,
     save_master_listings,
+    find_master_item,
 )
 
 # Konstanter Disclosure-Text (an marketing_text in payhip-listing.csv angehaengt)
@@ -109,7 +110,9 @@ def save_uploaded_yt(data: dict) -> None:
 
 
 def find_item_by_folder(items: list, folder_name: str) -> dict:
-    """Findet ein master-listings.json Item per Ordner-Basename (case-insensitive)."""
+    """Deprecated: nutze find_master_item(master, entry_id) stattdessen.
+    Diese Funktion wird nur noch für Fallback-Matching verwendet.
+    """
     if not items or not folder_name:
         return None
     target = folder_name.strip().lower()
@@ -439,6 +442,21 @@ def main():
     failed      = []
     yt_tracking = load_uploaded_yt()
 
+    # Build mapping: pending entry id → folder_name (für später, status-update)
+    pending_by_id = {}
+    if PENDING_FILE.exists():
+        try:
+            with PENDING_FILE.open("r", encoding="utf-8") as f:
+                pending_list = json.load(f)
+                if isinstance(pending_list, list):
+                    for p_entry in pending_list:
+                        p_id = p_entry.get("id", "")
+                        p_folder = p_entry.get("folder", "")
+                        if p_id and p_folder:
+                            pending_by_id[p_id] = (p_folder, p_entry)
+        except Exception:
+            pass
+
     for folder_name, mp4_path in mp4_jobs:
         print(f"\n{'─'*52}")
 
@@ -459,9 +477,18 @@ def main():
         size_mb = mp4_path.stat().st_size / 1024 / 1024
         print(f"📤 Lade hoch: {folder_name}  ({size_mb:.1f} MB)")
 
-        item = find_item_by_folder(master_items, folder_name)
-        if item:
-            print(f"   ✅ Master-Match: id={item.get('id')} folder='{item.get('folder')}'")
+        # ID-basiertes Matching: Suche Master-Item mit matching folder
+        item = None
+        entry_id = None
+        for master_item in master_items:
+            master_folder = master_item.get("folder", "")
+            if master_folder and Path(master_folder).name == folder_name:
+                item = master_item
+                entry_id = master_item.get("id", "")
+                break
+
+        if item and entry_id:
+            print(f"   ✅ Master-Match: id={entry_id} folder='{item.get('folder')}'")
         else:
             print("   ⚠️  Kein master-listings.json Match – Ordnername als Fallback")
 
@@ -477,7 +504,7 @@ def main():
             url = f"https://www.youtube.com/shorts/{video_id}"
             print(f"   ✅ Hochgeladen! Video-ID: {video_id}")
             print(f"   🔗 {url}")
-            uploaded.append({"folder": folder_name, "video_id": video_id, "url": url, "item": item})
+            uploaded.append({"folder": folder_name, "video_id": video_id, "url": url, "item": item, "entry_id": entry_id})
             # SSoT: youtube_url direkt im Master-Item setzen (persistieren am Ende)
             if item is not None:
                 item["youtube_url"] = url
@@ -513,7 +540,7 @@ def main():
     print("\n🛒 Erzeuge payhip-listing.csv...")
     write_payhip_listing_csv(day_folder, items_with_url)
 
-    # --- Status in pending.json aktualisieren ---
+    # --- Status in pending.json aktualisieren (id-basiert) ---
     if not PENDING_FILE.exists():
         return
 
@@ -521,19 +548,33 @@ def main():
         with PENDING_FILE.open("r", encoding="utf-8") as f:
             pending = json.load(f)
 
-        uploaded_map   = {u["folder"]: u for u in uploaded}
+        if not isinstance(pending, list):
+            return
+
+        # Lade master-listings.json für Matching
+        try:
+            master = load_master_listings(day_folder)
+        except Exception:
+            master = None
+
         status_updated = False
 
         for entry in pending:
             if entry.get("status") == VIDEO_STATUS:
-                folder_path = entry.get("folder", "")
-                folder_name = Path(folder_path).name if folder_path else ""
-                if folder_name in uploaded_map:
-                    u = uploaded_map[folder_name]
-                    entry["status"]      = YOUTUBE_STATUS
-                    entry["youtube_url"] = u["url"]
-                    entry["youtube_id"]  = u["video_id"]
-                    status_updated = True
+                entry_id = entry.get("id", "")
+                if entry_id:
+                    # Finde matching Upload via entry_id
+                    matching_upload = None
+                    for u in uploaded:
+                        if u.get("entry_id") == entry_id:
+                            matching_upload = u
+                            break
+
+                    if matching_upload:
+                        entry["status"]      = YOUTUBE_STATUS
+                        entry["youtube_url"] = matching_upload["url"]
+                        entry["youtube_id"]  = matching_upload["video_id"]
+                        status_updated = True
 
         if status_updated:
             atomic_write_json(PENDING_FILE, pending)
