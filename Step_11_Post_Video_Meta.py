@@ -108,8 +108,8 @@ SHOP_CTA     = config.get("shop_cta", "")  # Shop-CTA für Meta-Posts
 
 # Festwerte fuer facebook-listing.csv (Commerce-Manager-Import)
 FB_PRICE        = "2,99"
-FB_AVAILABILITY = "auf Lager"
-FB_CONDITION    = "neu"
+FB_AVAILABILITY = "in stock"
+FB_CONDITION    = "new"
 
 ETSY_CSV_FIELDS = [
     "title_de", "description_de", "short_line_de", "tags_de",
@@ -119,6 +119,8 @@ ETSY_CSV_FIELDS = [
 FB_CSV_FIELDS = [
     "product_id", "video_link_github", "title", "price",
     "payhip_link", "availability", "condition", "description",
+    "image_link", "additional_image_link1", "additional_image_link2",
+    "additional_image_link3", "additional_image_link4",
 ]
 
 ELIGIBLE_STATUSES  = {
@@ -200,7 +202,9 @@ def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | No
     """
     Schreibt facebook-listing.csv (Commerce-Manager-Import, EN-only, Festwerte).
     Spalten: product_id | video_link_github | title | price | payhip_link |
-             availability | condition | description
+             availability | condition | description |
+             image_link | additional_image_link1 | additional_image_link2 |
+             additional_image_link3 | additional_image_link4
     Wird NICHT in Excel geoeffnet (manueller Import in Commerce Manager).
     Auch Items ohne payhip_product_link / video_github_url werden geschrieben
     (Commerce-Manager-Validierung uebernimmt der User).
@@ -214,15 +218,39 @@ def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | No
             )
             writer.writeheader()
             for it in items:
+                # Extrahiere Mockup-URLs aus github_mockup_urls
+                mockup_urls = it.get("github_mockup_urls", [])
+                image_link = ""
+                additional_image_link1 = ""
+                additional_image_link2 = ""
+                additional_image_link3 = ""
+                additional_image_link4 = ""
+
+                if len(mockup_urls) > 0:
+                    image_link = mockup_urls[0].get("url", "")
+                if len(mockup_urls) > 1:
+                    additional_image_link1 = mockup_urls[1].get("url", "")
+                if len(mockup_urls) > 2:
+                    additional_image_link2 = mockup_urls[2].get("url", "")
+                if len(mockup_urls) > 3:
+                    additional_image_link3 = mockup_urls[3].get("url", "")
+                if len(mockup_urls) > 4:
+                    additional_image_link4 = mockup_urls[4].get("url", "")
+
                 writer.writerow({
-                    "product_id":        it.get("id", ""),
-                    "video_link_github": it.get("video_github_url") or "",
-                    "title":             it.get("etsy_title_en") or it.get("etsy_title", ""),
-                    "price":             FB_PRICE,
-                    "payhip_link":       it.get("payhip_product_link") or "",
-                    "availability":      FB_AVAILABILITY,
-                    "condition":         FB_CONDITION,
-                    "description":       it.get("etsy_description_en") or "",
+                    "product_id":              it.get("id", ""),
+                    "video_link_github":       it.get("video_github_url") or "",
+                    "title":                   it.get("etsy_title_en") or it.get("etsy_title", ""),
+                    "price":                   FB_PRICE,
+                    "payhip_link":             it.get("payhip_product_link") or "",
+                    "availability":            FB_AVAILABILITY,
+                    "condition":               FB_CONDITION,
+                    "description":             it.get("etsy_description_en") or "",
+                    "image_link":              image_link,
+                    "additional_image_link1":  additional_image_link1,
+                    "additional_image_link2":  additional_image_link2,
+                    "additional_image_link3":  additional_image_link3,
+                    "additional_image_link4":  additional_image_link4,
                 })
         print(f"📋 facebook-listing.csv geschrieben: {len(items)} Zeile(n).")
         return csv_path

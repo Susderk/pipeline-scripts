@@ -344,11 +344,22 @@ def phase3_github_upload(pending: list, upscaled_status: str, date_str: str) -> 
         elif entry.get("video_github_url"):
             print(f"   ⏭️  Video bereits hochgeladen: {entry['video_github_url']}")
 
-    # ── master-listings.json mit video_github_url updaten ────────────────────
+    # ── master-listings.json mit video_github_url und github_mockup_urls updaten ────────────────────
     for day_folder, updates in master_updates.items():
         try:
             master = load_master_listings(day_folder)
             n_updated, n_missing = 0, 0
+
+            # Zusätzlich: Sammle github_mockup_urls für alle Einträge
+            mockup_updates: dict[str, list] = {}  # { entry_id: [...mockup dicts...] }
+
+            for entry in pending:
+                if entry.get("status") == upscaled_status:
+                    entry_id = entry.get("id", "")
+                    mk_urls = entry.get("github_mockup_urls", [])
+                    if entry_id and mk_urls:
+                        mockup_updates[entry_id] = mk_urls
+
             for entry_id, video_url in updates:
                 item = find_master_item(master, entry_id)
                 if item is None:
@@ -357,11 +368,14 @@ def phase3_github_upload(pending: list, upscaled_status: str, date_str: str) -> 
                           f"{day_folder.name} – Video-URL nicht persistiert.")
                     continue
                 item["video_github_url"] = video_url
+                # Persistiere auch github_mockup_urls falls vorhanden
+                if entry_id in mockup_updates:
+                    item["github_mockup_urls"] = mockup_updates[entry_id]
                 n_updated += 1
             if n_updated:
                 save_master_listings(day_folder, master)
                 print(f"   🗂️  master-listings.json ({day_folder.name}) aktualisiert: "
-                      f"{n_updated} video_github_url gesetzt.")
+                      f"{n_updated} video_github_url + github_mockup_urls gesetzt.")
             if n_missing:
                 print(f"   ⚠️  {n_missing} fehlende master-id(s) in {day_folder.name}.")
         except Exception as e:
