@@ -123,11 +123,19 @@ def find_item_by_folder(items: list, folder_name: str) -> dict:
 
 def build_title(row: dict) -> str:
     """Baut den YouTube-Titel (max. 100 Zeichen).
-    Format: {etsy_title_en} | AI Art | 4K Wallpaper #AIWallpaper
-    Nutzt etsy_title_en (SEO-Langtitel) statt etsy_title (Kurztitel).
+
+    BL-076: Primär marketing_title (kurzer Produktname, SEO-freundlich für YouTube-Discovery).
+    Fallback auf etsy_title_en wenn marketing_title fehlt/leer.
+    Format: {marketing_title} | AI Wallpaper 4K | Aesthetic Desktop Background
     """
-    base = row.get("etsy_title_en", row.get("etsy_title", "Wallpaper")) if row else "Wallpaper"
-    title = f"{base} | AI Art | 4K Wallpaper #AIWallpaper"
+    if row:
+        base = (row.get("marketing_title") or "").strip()
+        if not base:
+            # Fallback: etsy_title_en (bisheriges Verhalten)
+            base = (row.get("etsy_title_en") or row.get("etsy_title") or "Wallpaper").strip()
+    else:
+        base = "Wallpaper"
+    title = f"{base} | AI Wallpaper 4K | Aesthetic Desktop Background"
     return title[:100]
 
 
@@ -138,8 +146,21 @@ def build_description(row: dict) -> str:
       Zeile 1–2: short_line (Hook + Keyword – vor "mehr anzeigen" sichtbar)
       Zeile 3:   Shop-CTA (vor "mehr anzeigen" sichtbar)
       Danach:    etsy_description_en, Hashtags, #Shorts
+      BL-076: Etsy-Shop-Link + Hashtag-Cluster am Ende
+      BL-076: Nischen-Hashtags aus social_hashtags (erste 4) nach dem Cluster
     """
     shop_cta = str(config.get("shop_cta", "")).strip()
+
+    # BL-076: Etsy-Shop-Link-Block (fester Link – product_link noch nicht verfügbar bei Step_08)
+    etsy_shop_block = (
+        "---\n"
+        "Get this wallpaper:\n"
+        "https://digipicshopdesigns.etsy.com\n"
+        "\n"
+        "Use code NEWCUST50 for 50% off your first order.\n"
+        "\n"
+        "#AIWallpaper #DesktopWallpaper #4KWallpaper #ZoomBackground #AestheticWallpaper"
+    )
 
     parts = []
     if row:
@@ -162,6 +183,19 @@ def build_description(row: dict) -> str:
     if ADD_SHORTS_TAG:
         parts.append("")
         parts.append("#Shorts")
+
+    # BL-076: Etsy-Shop-Link + Basis-Hashtag-Cluster
+    parts.append("")
+    parts.append(etsy_shop_block)
+
+    # BL-076: Nischen-Hashtags aus social_hashtags (erste 4 Wörter, mit #-Präfix)
+    if row:
+        raw_social = (row.get("social_hashtags") or "").strip()
+        if raw_social:
+            niche_tags = raw_social.split()[:4]
+            niche_hashtags_str = " ".join(f"#{tag.lstrip('#')}" for tag in niche_tags)
+            parts.append(niche_hashtags_str)
+
     return "\n".join(parts)
 
 
@@ -211,19 +245,15 @@ def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
     """
     Schreibt payhip-listing.csv im Tagesordner — eine Zeile pro frisch
     hochgeladenem master-Item. Spalten:
-      id, folder, title, youtube_url, marketing_text,
-      payhip_product_link, promo_code
+      id, folder, title, youtube_url, marketing_text
     marketing_text = etsy_description_en + "\n\n" + AI-Disclosure.
-    payhip_product_link: leer — Operator traegt nach manuellem Payhip-Upload ein.
-    promo_code: vorbelegt mit "NEWCUST50".
     """
     if not items_for_payhip:
         print("   ℹ️  Keine Items fuer payhip-listing.csv (keine erfolgreichen Uploads).")
         return
 
     csv_path = day_folder / "payhip-listing.csv"
-    fieldnames = ["id", "folder", "title", "youtube_url", "marketing_text",
-                  "payhip_product_link", "promo_code"]
+    fieldnames = ["id", "folder", "title", "youtube_url", "marketing_text"]
 
     rows = []
     for it in items_for_payhip:
@@ -235,13 +265,11 @@ def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
         else:
             marketing_text = PAYHIP_AI_DISCLOSURE
         rows.append({
-            "id":                   it.get("id", ""),
-            "folder":               it.get("folder", ""),
-            "title":                title,
-            "youtube_url":          it.get("youtube_url") or "",
-            "marketing_text":       marketing_text,
-            "payhip_product_link":  it.get("payhip_product_link") or "",
-            "promo_code":           "NEWCUST50",
+            "id":              it.get("id", ""),
+            "folder":          it.get("folder", ""),
+            "title":           title,
+            "youtube_url":     it.get("youtube_url") or "",
+            "marketing_text":  marketing_text,
         })
 
     tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
@@ -595,40 +623,4 @@ def main():
         if not isinstance(pending, list):
             return
 
-        # Lade master-listings.json für Matching
-        try:
-            master = load_master_listings(day_folder)
-        except Exception:
-            master = None
-
-        status_updated = False
-
-        for entry in pending:
-            if entry.get("status") == VIDEO_STATUS:
-                entry_id = entry.get("id", "")
-                if entry_id:
-                    # Finde matching Upload via entry_id
-                    matching_upload = None
-                    for u in uploaded:
-                        if u.get("entry_id") == entry_id:
-                            matching_upload = u
-                            break
-
-                    if matching_upload:
-                        entry["status"]      = YOUTUBE_STATUS
-                        entry["youtube_url"] = matching_upload["url"]
-                        entry["youtube_id"]  = matching_upload["video_id"]
-                        status_updated = True
-
-        if status_updated:
-            atomic_write_json(PENDING_FILE, pending)
-            print(f"\n💾 Status auf '{YOUTUBE_STATUS}' gesetzt.")
-        else:
-            print(f"\nℹ️  Keine passenden Einträge für Statusänderung in pending.json gefunden.")
-
-    except Exception as e:
-        print(f"⚠️  Konnte pending.json nicht aktualisieren: {e}")
-
-
-if __name__ == "__main__":
-    main()
+        # Lade master-listi
