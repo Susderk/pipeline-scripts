@@ -11,8 +11,7 @@ Substring-Matching mehr.
 Schreibt nach erfolgreichem Upload:
 - master-listings.json item.youtube_url (SSoT)
 - payhip-listing.csv im Tagesordner (nur frisch hochgeladene Items),
-  inkl. youtube_url und leeren Spalten payhip_product_link / promo_code
-  fuer das nachfolgende Approval Gate
+  mit youtube_url und marketing_text fuer Payhip-Integration
 - prompts_pending.json entry.youtube_url / .youtube_id (Uebergangs-Felder
   bis Refactor-Punkt 9 bestaetigt, dass kein Reader sie braucht)
 
@@ -167,7 +166,12 @@ def build_description(row: dict) -> str:
 
 
 def build_tags(row: dict) -> list:
-    """Baut die YouTube-Tag-Liste aus etsy_tags_en + youtube_base_tags aus config (max. 500 Zeichen gesamt)."""
+    """
+    Baut die YouTube-Tag-Liste aus etsy_tags_en + youtube_base_tags aus config.
+    Respektiert das YouTube-500-Zeichen-Limit (inkl. Kommas und Quotes).
+    Tags, die nicht reinpassen, werden weggelassen (nicht abgeschnitten).
+    #Shorts wird NICHT ins Tag-Array aufgenommen (nur noch in Beschreibung).
+    """
     # Etsy-Tags aus CSV
     tags = []
     if row:
@@ -183,27 +187,39 @@ def build_tags(row: dict) -> list:
             tags.append(bt)
             existing_lower.add(bt.lower())
 
-    if ADD_SHORTS_TAG and "Shorts" not in tags:
-        tags.append("Shorts")
-    return tags[:500]
+    # YouTube Tag-Budget: max. 500 Zeichen, inkl. Kommas und Quotes
+    # Format in YouTube API: "tag1", "tag2", ... → 2 Zeichen Quotes pro Tag, Komma + Space zwischen Tags
+    def estimate_budget(tag_list: list) -> int:
+        """Schätzt die Zeichenlänge der formatierten Tag-Liste."""
+        if not tag_list:
+            return 0
+        # Format: "tag1", "tag2", ..., "tagN"
+        # = Summe(len(tag) + 2 für Quotes) + (len(tags)-1) * 2 für Komma + Space
+        content_len = sum(len(t) + 2 for t in tag_list)
+        sep_len = (len(tag_list) - 1) * 2  # ", "
+        return content_len + sep_len
+
+    # Entferne Tags von hinten, bis Budget unter 500 Zeichen
+    while estimate_budget(tags) > 500 and tags:
+        removed_tag = tags.pop()
+        print(f"      ⚠️  Tag entfernt (Budget 500Z überschritten): '{removed_tag}'")
+
+    return tags
 
 
 def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
     """
     Schreibt payhip-listing.csv im Tagesordner — eine Zeile pro frisch
     hochgeladenem master-Item. Spalten:
-      id, folder, title, youtube_url, marketing_text,
-      payhip_product_link (leer), promo_code (leer)
+      id, folder, title, youtube_url, marketing_text
     marketing_text = etsy_description_en + "\n\n" + AI-Disclosure.
-    payhip_product_link / promo_code traegt der User im Approval Gate ein.
     """
     if not items_for_payhip:
         print("   ℹ️  Keine Items fuer payhip-listing.csv (keine erfolgreichen Uploads).")
         return
 
     csv_path = day_folder / "payhip-listing.csv"
-    fieldnames = ["id", "folder", "title", "youtube_url",
-                  "marketing_text", "payhip_product_link", "promo_code"]
+    fieldnames = ["id", "folder", "title", "youtube_url", "marketing_text"]
 
     rows = []
     for it in items_for_payhip:
@@ -215,13 +231,11 @@ def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
         else:
             marketing_text = PAYHIP_AI_DISCLOSURE
         rows.append({
-            "id":                  it.get("id", ""),
-            "folder":              it.get("folder", ""),
-            "title":               title,
-            "youtube_url":         it.get("youtube_url") or "",
-            "marketing_text":      marketing_text,
-            "payhip_product_link": "",
-            "promo_code":          "",
+            "id":              it.get("id", ""),
+            "folder":          it.get("folder", ""),
+            "title":           title,
+            "youtube_url":     it.get("youtube_url") or "",
+            "marketing_text":  marketing_text,
         })
 
     tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
@@ -477,20 +491,37 @@ def main():
         size_mb = mp4_path.stat().st_size / 1024 / 1024
         print(f"📤 Lade hoch: {folder_name}  ({size_mb:.1f} MB)")
 
-        # ID-basiertes Matching: Suche Master-Item mit matching folder
+        # ID-basiertes Matching: Suche Entry-ID zuerst aus pending_by_id, dann aus Master
         item = None
         entry_id = None
-        for master_item in master_items:
-            master_folder = master_item.get("folder", "")
-            if master_folder and Path(master_folder).name == folder_name:
-                item = master_item
-                entry_id = master_item.get("id", "")
-                break
+
+        # Schritt 1: Suche in pending_by_id (Quelle der Wahrheit für entry_id)
+        if folder_name in pending_by_id:
+            p_folder, p_entry = pending_by_id[folder_name]
+            entry_id = p_entry.get("id", "")
+
+        # Schritt 2: Fallback zu Master-Item (nur wenn entry_id noch None ist)
+        if not entry_id:
+            for master_item in master_items:
+                master_folder = master_item.get("folder", "")
+                if master_folder and Path(master_folder).name == folder_name:
+                    item = master_item
+                    entry_id = master_item.get("id", "")
+                    break
+
+        # Schritt 3: Wenn entry_id gefunden, suche auch das matching master_item
+        if entry_id and not item:
+            for master_item in master_items:
+                if master_item.get("id", "") == entry_id:
+                    item = master_item
+                    break
 
         if item and entry_id:
             print(f"   ✅ Master-Match: id={entry_id} folder='{item.get('folder')}'")
+        elif entry_id:
+            print(f"   ℹ️  Entry-ID gefunden: {entry_id} (master-Match nicht verfügbar)")
         else:
-            print("   ⚠️  Kein master-listings.json Match – Ordnername als Fallback")
+            print("   ⚠️  Kein Entry-Match – Ordnername als Fallback")
 
         title       = build_title(item)
         description = build_description(item)
@@ -504,7 +535,14 @@ def main():
             url = f"https://www.youtube.com/shorts/{video_id}"
             print(f"   ✅ Hochgeladen! Video-ID: {video_id}")
             print(f"   🔗 {url}")
-            uploaded.append({"folder": folder_name, "video_id": video_id, "url": url, "item": item, "entry_id": entry_id})
+            # KRITISCH: entry_id MUSS gesetzt sein, damit Status-Update funktioniert
+            if entry_id:
+                uploaded.append({"folder": folder_name, "video_id": video_id, "url": url, "item": item, "entry_id": entry_id})
+            else:
+                # entry_id fehlt → kann Status nicht aktualisieren, aber master wird aktualisiert
+                print(f"   ⚠️  Warnung: Keine entry_id für Status-Update in pending.json")
+                uploaded.append({"folder": folder_name, "video_id": video_id, "url": url, "item": item, "entry_id": None})
+
             # SSoT: youtube_url direkt im Master-Item setzen (persistieren am Ende)
             if item is not None:
                 item["youtube_url"] = url

@@ -35,6 +35,7 @@ from config_loader import (
     save_master_listings,
     find_master_item,
     update_master_item,
+    atomic_write_json,
 )
 
 # === CONFIG ===
@@ -58,6 +59,8 @@ VIDEO_FORMAT       = config.get("video_output_format", "mp4")
 FFMPEG_EXE         = config.get("ffmpeg_path", "ffmpeg").strip() or "ffmpeg"
 VIDEO_W            = int(config.get("video_width", 1080))
 VIDEO_H            = int(config.get("video_height", 1920))
+KEN_BURNS          = bool(config.get("ken_burns", False))
+KEN_BURNS_STEP     = float(config.get("ken_burns_intensity", 0.002))
 
 # Hook-Text-Overlay-Config (ffmpeg drawtext)
 HOOK_CONFIG        = config.get("hook", {})
@@ -72,12 +75,9 @@ HOOKS_FILE         = Path(cfg["HOOKS_FILE"])   # aus config_loader → JSON Date
 
 
 # === HELPERS ===
-def atomic_write_json(path: Path, data) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(path)
+# Hinweis: `atomic_write_json` wird aus `config_loader` importiert (oben).
+# Gehärtete Variante mit Retry/Backoff gegen Windows-Dateilocks — keine lokale
+# Kopie mehr. Migration 2026-04-20 (session-log-2026-04-20-c.md).
 
 
 def check_ffmpeg() -> bool:
@@ -315,13 +315,18 @@ def get_folder_subdirs(mockups_root: Path) -> list:
 
 
 def get_png_files(folder: Path) -> list:
-    """Gibt alle PNG-Dateien in einem Ordner zurück."""
-    return sorted([f for f in folder.iterdir() if f.is_file() and f.suffix.lower() == ".png"])
+    """Gibt alle PNG und JPG Dateien in einem Ordner zurück."""
+    return sorted([f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg"}])
 
 
 def create_video_ffmpeg(png_files: list, output_path: Path, dryrun: bool = False) -> bool:
     """
     Erstellt ein Video aus PNG-Dateien mit sanften Crossfade-Übergängen via FFmpeg.
+
+    Ken-Burns-Modus (config: ken_burns=true):
+      Jedes Bild erhält eine langsame Zoom-Animation — gerade Indizes zoomen in,
+      ungerade zoomen heraus. Intensität steuerbar via ken_burns_intensity (Zoom-Inkrement
+      pro Frame). Wenn ken_burns=false (default): exakt identische Filter-Chain wie zuvor.
     """
     n = len(png_files)
     if n == 0:
@@ -347,11 +352,38 @@ def create_video_ffmpeg(png_files: list, output_path: Path, dryrun: bool = False
 
     # Filter-Graph: Skalierung + Crossfade-Kette
     scale_parts = []
+
+    if KEN_BURNS:
+        # Konstanten für Ken-Burns vorab berechnen (einmal, nicht pro Frame-Iteration)
+        frames_per_image = int(DURATION_PER_IMAGE * VIDEO_FPS)
+        overscan_w = int(VIDEO_W * 1.3)
+        overscan_h = int(VIDEO_H * 1.3)
+
     for i in range(n):
-        scale_parts.append(
-            f"[{i}:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=decrease,"
-            f"pad={VIDEO_W}:{VIDEO_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={VIDEO_FPS}[v{i}]"
-        )
+        if KEN_BURNS:
+            # Zoom-in für gerade Indizes (0, 2, …), Zoom-out für ungerade (1, 3, …)
+            if i % 2 == 0:
+                # Zoom-in: startet bei 1.0, läuft bis 1.2
+                zoom_expr = f"'min(zoom+{KEN_BURNS_STEP},1.2)'"
+            else:
+                # Zoom-out: startet bei 1.2, läuft bis 1.0
+                zoom_expr = f"'if(eq(on,1),1.2,max(1.0,zoom-{KEN_BURNS_STEP}))'"
+            x_expr = "'iw/2-(iw/zoom/2)'"
+            y_expr = "'ih/2-(ih/zoom/2)'"
+            scale_parts.append(
+                # Schritt 1: auf 130 % der Zielgröße hochskalieren (Platz für Zoom-Pan)
+                f"[{i}:v]scale={overscan_w}:{overscan_h}:"
+                f"force_original_aspect_ratio=decrease,"
+                f"pad={overscan_w}:{overscan_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                # Schritt 2: zoompan erzeugt frames_per_image Frames in Zielgröße
+                f"zoompan=z={zoom_expr}:x={x_expr}:y={y_expr}:"
+                f"d={frames_per_image}:s={VIDEO_W}x{VIDEO_H}:fps={VIDEO_FPS}[v{i}]"
+            )
+        else:
+            scale_parts.append(
+                f"[{i}:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=decrease,"
+                f"pad={VIDEO_W}:{VIDEO_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={VIDEO_FPS}[v{i}]"
+            )
 
     filter_complex = "; ".join(scale_parts)
 
@@ -429,7 +461,15 @@ def main():
         print("   Bitte zuerst Step 03 (Marketing Ordner) ausführen.")
         sys.exit(1)
 
-    # Alle <FolderName>/Mockups/ Verzeichnisse im Tagesordner finden
+    # --- DRY-RUN (vor der Dateiprüfung, damit kein Abbruch bei fehlenden Ordnern) ---
+    if DRYRUN:
+        print("\n🧪 DRY-RUN – keine echte Video-Erstellung.")
+        print("   (Dateiprüfung übersprungen – keine echten Mockup-Ordner nötig)")
+        print(f"\n{'='*52}")
+        print("🧪 DRY-RUN abgeschlossen.")
+        return
+
+    # Alle <FolderName>/Mockups/ Verzeichnisse im Tagesordner finden (nur im echten Modus nötig)
     subdirs = sorted([
         d / "Mockups"
         for d in day_folder.iterdir()
@@ -439,6 +479,7 @@ def main():
     if not subdirs:
         print(f"❌ Keine <FolderName>/Mockups/ Unterordner in {day_folder} gefunden.")
         print("   Erwartet wird: Tagesordner/<FolderName>/Mockups/<PNG-Dateien>")
+        print("   Bitte zuerst Step 05 (Bilder umbenennen) ausführen.")
         sys.exit(1)
 
     print(f"\n📁 {len(subdirs)} Folder-Unterordner gefunden:")
@@ -504,13 +545,34 @@ def main():
         print(f"   🎬 {Path(v).name}")
     print(f"{'='*52}")
 
-    # Status nur aktualisieren wenn ALLE Folders ein Video haben (kein any_failed, kein übersprungener Folder)
+    # Gate vor Status-Write:
+    # - any_failed=True (echter Fehler beim Video-Bau) bricht den Lauf hart ab.
+    # - Wenn kein einziges Video erstellt wurde (z. B. alle Mockups-Ordner leer),
+    #   gibt es nichts zu persistieren → stiller Return.
+    # - Partial-Success (mind. 1 Video, aber < expected_videos) ist KEIN Fehler
+    #   mehr: seit 2026-04-15 darf der Cowork-Task „canva-mockups-today" Produkte
+    #   unter der 5-Punkte-Schwelle überspringen; die betroffenen Ordner haben
+    #   dann legitim leere Mockups/. Status-Write läuft trotzdem, aber nur für
+    #   die Einträge, deren Video tatsächlich in `videos_created` gelandet ist
+    #   (ID-basiertes Matching weiter unten). Einträge ohne Video bleiben auf
+    #   ihrem vorherigen Status — sie fallen ohnehin später via `nolist`-Filter
+    #   bzw. fehlende Artefakte aus der Pipeline heraus.
     expected_videos = len(subdirs)
-    if any_failed or len(videos_created) < expected_videos:
-        print(f"\nℹ️ Keine Statusänderung – nicht alle Videos erfolgreich erstellt ({len(videos_created)}/{expected_videos}).")
-        if any_failed:
-            sys.exit(1)
+    if any_failed:
+        print(f"\nℹ️ Keine Statusänderung – Fehler beim Video-Bau "
+              f"({len(videos_created)}/{expected_videos} erfolgreich).")
+        sys.exit(1)
+
+    if not videos_created:
+        print(f"\nℹ️ Keine Statusänderung – kein Video erstellt "
+              f"(0/{expected_videos}).")
         return
+
+    if len(videos_created) < expected_videos:
+        skipped = expected_videos - len(videos_created)
+        print(f"\nℹ️ Teilerfolg: {len(videos_created)}/{expected_videos} Video(s) erstellt, "
+              f"{skipped} Folder übersprungen (leerer Mockups-Ordner). "
+              f"Status-Update läuft nur für die erfolgreich erzeugten Videos.")
 
     if not PENDING_FILE.exists():
         return

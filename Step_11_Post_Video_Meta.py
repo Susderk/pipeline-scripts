@@ -4,6 +4,8 @@
 Step_11_Post_Video_Meta.py
 
 Postet das in Step_07 erstellte Video als Reel auf Facebook und Instagram.
+Instagram-Reels werden mit dem entsprechenden Produkt aus dem Meta-Katalog getaggt
+(Zuschauer sehen das Einkaufstaschen-Symbol und können zum Shop-Listing klicken).
 
 Refactor-Punkt 7 (master-listings.json als SSoT):
   - Reader: master-listings.json (kein listings.csv / meta-listing.csv mehr)
@@ -11,6 +13,12 @@ Refactor-Punkt 7 (master-listings.json als SSoT):
   - Payhip-Pause entfernt: promo_code + YT-Einbettung erfolgen bereits im
     Payhip-Approval-Gate (Start_Scripts.py) nach Step_09
   - meta-listing.csv wird NICHT mehr erzeugt (alle Infos im master)
+
+Instagram-Product-Tagging (neu ab 2026-04-13):
+  - Config-Key: meta_catalog_id (Katalog-ID für Meta Commerce Manager)
+  - Pro Instagram-Reel: ein Produkt taggen (product_id aus master-listings.json)
+  - Fehlertoleranz: Wenn Tagging fehlschlägt, wird der Reel ohne Tags gepostet
+  - Dry-Run: Tagging wird nur geloggt, nicht ausgeführt
 
 Seit 2026-04-09 ist Step_11 alleiniger Schreiber von
   • etsy-listing.csv     (DE+EN Content fuer manuelles Etsy-Listing-Backup)
@@ -28,7 +36,7 @@ Ablauf:
   4. Alle pending.json-Eintraege mit status in ELIGIBLE_STATUSES suchen
   5. Caption bauen: etsy_description_en + ggf. Promo-Text + CTA + Hashtags
   6. Facebook Reel: Dreiphasiger Upload (start → Bytes → finish → publish)
-  7. Instagram Reel: Resumable Upload → Container → Status-Polling → Publish
+  7. Instagram Reel: Resumable Upload → Container (mit Product-Tags) → Status-Polling → Publish
   8. pending.json: status = "Meta Posted"
 
 Benötigte Umgebungsvariablen:
@@ -39,8 +47,9 @@ Benötigte Umgebungsvariablen:
 Fehlt META_ACCESS_TOKEN → Schritt wird übersprungen (kein Fehler).
 
 Config-Parameter (config.yaml):
-  meta_video_post_fb: true/false
-  meta_video_post_ig: true/false
+  meta_catalog_id: "1487920626454273"          # Katalog-ID für Instagram Product Tagging
+  meta_video_post_fb: true/false               # Facebook-Reel posten
+  meta_video_post_ig: true/false               # Instagram-Reel posten (mit Product-Tagging)
   promo_texts:
     - "✨ Limited offer: Use code {code} for a special discount!"
     - "🎁 Grab yours with code {code} and save today!"
@@ -52,6 +61,7 @@ import sys
 import csv
 import json
 import time
+import base64
 import random
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -98,6 +108,7 @@ META_VERSION = "v25.0"
 
 POST_FB      = bool(config.get("meta_video_post_fb", True))
 POST_IG      = bool(config.get("meta_video_post_ig", True))
+META_CATALOG_ID = config.get("meta_catalog_id", "")  # Katalog-ID für Instagram Product Tagging
 PROMO_TEXTS  = config.get("promo_texts", [
     "✨ Limited offer: Use code {code} for a special discount!",
     "🎁 Grab yours with code {code} and save today!",
@@ -111,17 +122,23 @@ FB_PRICE        = "2,99"
 FB_AVAILABILITY = "in stock"
 FB_CONDITION    = "new"
 
-ETSY_CSV_FIELDS = [
-    "title_de", "description_de", "short_line_de", "tags_de",
-    "title_en", "description_en", "short_line_en", "tags_en",
-]
-
 FB_CSV_FIELDS = [
     "product_id", "video_link_github", "title", "price",
-    "payhip_link", "availability", "condition", "description",
-    "image_link", "additional_image_link1", "additional_image_link2",
-    "additional_image_link3", "additional_image_link4",
+    "product_link", "availability", "condition", "description",
+    "image_link", "additional_image_link",
+    "quantity_to_sell_on_facebook",
 ]
+
+# === GITHUB-UPLOAD facebook-listing-YYYYMM.csv (neu ab 2026-04-27) ===
+# Zentralisiertes Repo `Susderk/facebook-listings`, Branch main, Datei direkt im
+# Repo-Root (Datei-Name = csv_path.name). Replace-via-SHA fuer Idempotenz.
+# Token + Pattern symmetrisch zu Step_05/Step_09. Dry-Run-Hebel: dry_run.meta
+# (in Staging/Dev auf true → Upload simuliert).
+GITHUB_FB_LISTINGS_REPO = str(config.get("github_repo_facebook_listings",
+                                         "Susderk/facebook-listings"))
+GITHUB_BRANCH           = str(config.get("github_branch", "main"))
+GITHUB_TOKEN            = os.environ.get("Github_Token", "").strip()
+_FB_UPLOAD_RETRY_BACKOFFS = (0.5, 1.0, 2.0)
 
 ELIGIBLE_STATUSES  = {
     STATUSES.get("etsy_listed", "Etsy Listed"),  # Normalfall: Etsy-Step hat gelaufen
@@ -167,95 +184,278 @@ def get_mockup_paths(article_folder: str | None) -> list[str]:
     return mockups if len(mockups) == 5 else []
 
 
-def write_etsy_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
+def _github_upload_facebook_listing(
+    csv_path: Path,
+    repo: str,
+    branch: str,
+    token: str,
+) -> tuple:
     """
-    Schreibt etsy-listing.csv (Content-Backup, DE+EN).
-    Bewusst KEIN id/folder/listing_id/etsy_url – nur Content-Felder.
+    Laedt facebook-listing-YYYYMM.csv in den Root des Repos `repo` hoch
+    (Create oder Update via SHA). 3 Retry-Versuche mit Exponential Backoff
+    (0.5/1/2s) gegen transiente Netzwerk-/API-Fehler.
+
+    Pattern symmetrisch zu Step_05._github_upload_original — eigener Helper
+    pro Datei (kein Cross-Step-Refactor, siehe Scope-Grenze 2026-04-27).
+
+    Rueckgabe: (raw_url, sha) bei Erfolg, sonst (None, None).
     """
-    csv_path = day_folder / "etsy-listing.csv"
+    api_url = f"https://api.github.com/repos/{repo}/contents/{csv_path.name}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept":        "application/vnd.github+json",
+    }
+
     try:
-        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=ETSY_CSV_FIELDS,
-                delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
-            )
-            writer.writeheader()
-            for it in items:
-                writer.writerow({
-                    "title_de":        it.get("etsy_title_de") or it.get("etsy_title", ""),
-                    "description_de":  it.get("etsy_description_de", ""),
-                    "short_line_de":   it.get("short_line_de", ""),
-                    "tags_de":         it.get("etsy_tags_de", ""),
-                    "title_en":        it.get("etsy_title_en") or it.get("etsy_title", ""),
-                    "description_en":  it.get("etsy_description_en", ""),
-                    "short_line_en":   it.get("short_line_en", ""),
-                    "tags_en":         it.get("etsy_tags_en", ""),
-                })
-        print(f"📋 etsy-listing.csv geschrieben: {len(items)} Zeile(n).")
-        return csv_path
+        content_bytes = csv_path.read_bytes()
     except Exception as e:
-        print(f"⚠️  etsy-listing.csv konnte nicht geschrieben werden: {e}")
-        return None
+        print(f"   ❌ Konnte {csv_path.name} nicht lesen: {e}")
+        return None, None
+
+    for attempt_idx, backoff in enumerate(_FB_UPLOAD_RETRY_BACKOFFS):
+        # SHA der existierenden Datei ermitteln (Idempotenz / Replace)
+        existing_sha = None
+        try:
+            r = requests.get(api_url, headers=headers, timeout=30)
+            if r.status_code == 200:
+                existing_sha = r.json().get("sha")
+        except Exception:
+            pass
+
+        payload = {
+            "message": f"facebook-listings: {csv_path.name}",
+            "content": base64.b64encode(content_bytes).decode("utf-8"),
+            "branch":  branch,
+        }
+        if existing_sha:
+            payload["sha"] = existing_sha
+
+        try:
+            resp = requests.put(api_url, headers=headers, json=payload, timeout=60)
+        except Exception as e:
+            if attempt_idx < len(_FB_UPLOAD_RETRY_BACKOFFS) - 1:
+                print(f"   ↻ Netzwerkfehler ({e}) – retry in {backoff}s "
+                      f"({attempt_idx + 2}/{len(_FB_UPLOAD_RETRY_BACKOFFS)}).")
+                time.sleep(backoff)
+                continue
+            print(f"   ❌ Netzwerkfehler nach {len(_FB_UPLOAD_RETRY_BACKOFFS)} "
+                  f"Versuchen: {e}")
+            return None, None
+
+        if resp.status_code in (200, 201):
+            sha     = resp.json().get("content", {}).get("sha", "")
+            raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{csv_path.name}"
+            return raw_url, sha
+
+        if resp.status_code == 401:
+            # Auth-Fehler ist nicht transient → kein Retry
+            print(f"   ❌ GitHub API 401 (Github_Token ungueltig/abgelaufen): "
+                  f"{resp.text[:200]}")
+            return None, None
+        if resp.status_code == 403:
+            if attempt_idx < len(_FB_UPLOAD_RETRY_BACKOFFS) - 1:
+                print(f"   ↻ GitHub API 403 ({resp.text[:100]}) – retry in {backoff}s.")
+                time.sleep(backoff)
+                continue
+            print(f"   ❌ GitHub API 403 nach {len(_FB_UPLOAD_RETRY_BACKOFFS)} "
+                  f"Versuchen: {resp.text[:200]}")
+            return None, None
+        if resp.status_code == 422 and existing_sha is None:
+            # Datei existiert bereits — Retry mit frischem SHA
+            if attempt_idx < len(_FB_UPLOAD_RETRY_BACKOFFS) - 1:
+                print(f"   ↻ GitHub API 422 (Datei existiert) – retry mit "
+                      f"frischem SHA in {backoff}s.")
+                time.sleep(backoff)
+                continue
+            print(f"   ❌ GitHub API 422 nach {len(_FB_UPLOAD_RETRY_BACKOFFS)} "
+                  f"Versuchen: {resp.text[:200]}")
+            return None, None
+
+        # Andere 4xx/5xx → ebenfalls retrien (kann transient sein)
+        if attempt_idx < len(_FB_UPLOAD_RETRY_BACKOFFS) - 1:
+            print(f"   ↻ GitHub API {resp.status_code} – retry in {backoff}s.")
+            time.sleep(backoff)
+            continue
+        print(f"   ❌ GitHub API {resp.status_code} nach "
+              f"{len(_FB_UPLOAD_RETRY_BACKOFFS)} Versuchen: {resp.text[:200]}")
+        return None, None
+
+    return None, None
+
+
+def upload_facebook_listing_to_github(csv_path: Path | None, dryrun: bool) -> bool:
+    """
+    Wrapper rund um den Helper. Wird direkt nach write_facebook_listing_csv()
+    aufgerufen. Behandelt fehlende csv_path, Dry-Run, fehlenden Token, fehlendes
+    `requests`-Modul (das hier hart importiert wird) und delegiert sonst an den
+    Upload-Helper.
+
+    Rueckgabe: True bei Erfolg / Skip / Dry-Run, False bei Hard-Fail
+    (Aufrufer entscheidet — aktuell wird der Rueckgabe-Wert nicht hart geprueft,
+    weil der Upload nicht den Lauf abbrechen soll. Konsistent zu Step_09s
+    Verhalten: Token-Skip leise, andere Fehler sichtbar geloggt).
+    """
+    if csv_path is None:
+        print("ℹ️  facebook-listing-YYYYMM.csv: Kein csv_path uebergeben → "
+              "GitHub-Upload uebersprungen.")
+        return True
+
+    if dryrun:
+        print(f"🧪 DRY-RUN: facebook-listing GitHub-Upload simuliert "
+              f"(Repo {GITHUB_FB_LISTINGS_REPO}, Branch {GITHUB_BRANCH}, "
+              f"Datei {csv_path.name}).")
+        return True
+
+    if not GITHUB_TOKEN:
+        print("ℹ️  Github_Token nicht gesetzt → facebook-listing GitHub-Upload "
+              "uebersprungen.")
+        return True
+
+    if not csv_path.exists():
+        print(f"⚠️  facebook-listing-Datei {csv_path} nicht auf Disk – "
+              "GitHub-Upload uebersprungen.")
+        return True
+
+    print(f"\n🐙 GitHub-Upload {csv_path.name} → {GITHUB_FB_LISTINGS_REPO} "
+          f"(Branch {GITHUB_BRANCH})...")
+    raw_url, _sha = _github_upload_facebook_listing(
+        csv_path,
+        repo=GITHUB_FB_LISTINGS_REPO,
+        branch=GITHUB_BRANCH,
+        token=GITHUB_TOKEN,
+    )
+    if raw_url:
+        print(f"   ✅ {raw_url}")
+        return True
+    else:
+        print(f"   ⚠️  facebook-listing GitHub-Upload fehlgeschlagen "
+              f"(Pipeline laeuft weiter).")
+        return False
 
 
 def write_facebook_listing_csv(day_folder: Path, items: list[dict]) -> Path | None:
     """
-    Schreibt facebook-listing.csv (Commerce-Manager-Import, EN-only, Festwerte).
-    Spalten: product_id | video_link_github | title | price | payhip_link |
+    Schreibt facebook-listing.csv als kumulative Monatsdatei (Commerce-Manager-Import, EN-only, Festwerte).
+
+    Spalten: product_id | video_link_github | title | price | product_link |
              availability | condition | description |
-             image_link | additional_image_link1 | additional_image_link2 |
-             additional_image_link3 | additional_image_link4
-    Wird NICHT in Excel geoeffnet (manueller Import in Commerce Manager).
-    Auch Items ohne payhip_product_link / video_github_url werden geschrieben
-    (Commerce-Manager-Validierung uebernimmt der User).
+             image_link | additional_image_link (komma-separierte URL-Liste)
+
+    Ablauf:
+      1. Monatsordner aus day_folder ableiten (z.B. "Generated pics/2026/2026 April/")
+      2. YYYYMM aus day_folder-Namen extrahieren (z.B. "2026-04-12" → "202604")
+      3. CSV-Datei: month_folder / f"facebook-listing-{yyyymm}.csv"
+      4. Wenn Datei existiert: IDs aus bestehender Datei lesen (Deduplizierung)
+      5. Nur neue Items schreiben (deren IDs nicht in der Datei vorhanden sind)
+      6. Append-Modus, kein Header bei Append
+
+    Wird NICHT in Excel geöffnet (manueller Import in Commerce Manager).
+    Auch Items ohne product_link / video_github_url werden geschrieben
+    (Commerce-Manager-Validierung übernimmt der User).
     """
-    csv_path = day_folder / "facebook-listing.csv"
+    # Filter: nolist-Items ausschließen (Produkte mit < 5 Bildern)
+    items = [it for it in items if it.get("status") != "nolist"]
+
+    # Monatsordner und Dateiname bestimmen
+    month_folder = day_folder.parent  # z.B. "Generated pics/2026/2026 April/"
+    day_name = day_folder.name  # z.B. "2026-04-12"
+
+    # YYYYMM extrahieren: "2026-04-12" → "2026-04-" → "202604"
     try:
-        with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        yyyymm = day_name[:7].replace("-", "")  # "2026-04" → "202604"
+    except Exception:
+        yyyymm = ""
+
+    if not yyyymm:
+        print(f"⚠️  facebook-listing.csv: Konnte YYYYMM aus {day_name} nicht extrahieren.")
+        return None
+
+    csv_filename = f"facebook-listing-{yyyymm}.csv"
+    csv_path = month_folder / csv_filename
+
+    try:
+        # Existierende IDs lesen (Deduplizierung)
+        existing_ids = set()
+        file_exists = csv_path.exists()
+
+        if file_exists:
+            try:
+                with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+                    reader = csv.DictReader(
+                        f, delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL
+                    )
+                    for row in reader:
+                        product_id = row.get("product_id", "").strip()
+                        if product_id:
+                            existing_ids.add(product_id)
+            except Exception as e:
+                print(f"⚠️  facebook-listing.csv: Fehler beim Lesen der bestehenden Datei: {e}")
+                return None
+
+        # Neue Items filtern (nicht bereits in der Datei vorhanden)
+        new_items = [it for it in items if it.get("id", "") not in existing_ids]
+
+        # Rückmeldung wenn keine neuen Items
+        if not new_items:
+            print(f"📋 {csv_filename}: Alle {len(items)} Einträge bereits vorhanden, nichts hinzugefügt.")
+            return csv_path
+
+        # Datei öffnen: "a" wenn existiert (Append ohne Header), "w" wenn neu
+        mode = "a" if file_exists else "w"
+        with csv_path.open(mode, encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(
                 f, fieldnames=FB_CSV_FIELDS,
                 delimiter=";", quotechar='"', quoting=csv.QUOTE_ALL,
             )
-            writer.writeheader()
-            for it in items:
+
+            # Header nur bei neuer Datei
+            if not file_exists:
+                writer.writeheader()
+
+            # Neue Items schreiben
+            for it in new_items:
                 # Extrahiere Mockup-URLs aus github_mockup_urls
+                # Format: [{"file": "name", "url": "raw_github_url", "sha": "..."}, ...]
                 mockup_urls = it.get("github_mockup_urls", [])
                 image_link = ""
-                additional_image_link1 = ""
-                additional_image_link2 = ""
-                additional_image_link3 = ""
-                additional_image_link4 = ""
+                additional_image_link = ""
 
-                if len(mockup_urls) > 0:
-                    image_link = mockup_urls[0].get("url", "")
-                if len(mockup_urls) > 1:
-                    additional_image_link1 = mockup_urls[1].get("url", "")
-                if len(mockup_urls) > 2:
-                    additional_image_link2 = mockup_urls[2].get("url", "")
-                if len(mockup_urls) > 3:
-                    additional_image_link3 = mockup_urls[3].get("url", "")
-                if len(mockup_urls) > 4:
-                    additional_image_link4 = mockup_urls[4].get("url", "")
+                if mockup_urls:
+                    # image_link: erste URL
+                    image_link = mockup_urls[0].get("url", "") if len(mockup_urls) > 0 else ""
+
+                    # additional_image_link: komma-separierte Liste der URLs 2–5
+                    # Facebook erwartet: "url1, url2, url3, ..." in EINER Spalte
+                    additional_urls = []
+                    for i in range(1, min(5, len(mockup_urls))):
+                        url = mockup_urls[i].get("url", "")
+                        if url:
+                            additional_urls.append(url)
+                    additional_image_link = ", ".join(additional_urls)
 
                 writer.writerow({
                     "product_id":              it.get("id", ""),
                     "video_link_github":       it.get("video_github_url") or "",
                     "title":                   it.get("etsy_title_en") or it.get("etsy_title", ""),
                     "price":                   FB_PRICE,
-                    "payhip_link":             it.get("payhip_product_link") or "",
+                    "product_link":            it.get("product_link") or "",
                     "availability":            FB_AVAILABILITY,
                     "condition":               FB_CONDITION,
                     "description":             it.get("etsy_description_en") or "",
                     "image_link":              image_link,
-                    "additional_image_link1":  additional_image_link1,
-                    "additional_image_link2":  additional_image_link2,
-                    "additional_image_link3":  additional_image_link3,
-                    "additional_image_link4":  additional_image_link4,
+                    "additional_image_link":   additional_image_link,
+                    "quantity_to_sell_on_facebook": "999",
                 })
-        print(f"📋 facebook-listing.csv geschrieben: {len(items)} Zeile(n).")
+
+        # Rückmeldung
+        if file_exists:
+            print(f"📋 {csv_filename}: {len(new_items)} neue Zeile(n) angehängt ({len(existing_ids)} bereits vorhanden).")
+        else:
+            print(f"📋 {csv_filename} neu erstellt: {len(new_items)} Zeile(n).")
+
         return csv_path
     except Exception as e:
-        print(f"⚠️  facebook-listing.csv konnte nicht geschrieben werden: {e}")
+        print(f"⚠️  {csv_filename} konnte nicht geschrieben werden: {e}")
         return None
 
 
@@ -264,6 +464,9 @@ def write_stockportal_listing_csv(day_folder: Path, items: list[dict]) -> Path |
     Schreibt stockportal-listing.csv fuer Adobe-Stock copy-paste.
     Zwei Spalten: folder ; stock_tags (kommagetrennte Tag-Liste).
     """
+    # Filter: nolist-Items ausschließen (Produkte mit < 5 Bildern)
+    items = [it for it in items if it.get("status") != "nolist"]
+
     csv_path = day_folder / "stockportal-listing.csv"
     try:
         with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -463,7 +666,7 @@ def _fb_reel_upload(video_path: Path, caption: str, dry_run: bool,
 # =============================================================================
 
 def _ig_reel_upload(video_path: Path, caption: str, dry_run: bool,
-                    scheduled_time: datetime = None) -> dict:
+                    scheduled_time: datetime = None, product_id: str = None) -> dict:
     """
     Postet ein Video als Instagram Reel über den Resumable Upload.
     Phase 1: Container erstellen (upload_type=resumable) → upload_url + ig_container_id
@@ -473,27 +676,52 @@ def _ig_reel_upload(video_path: Path, caption: str, dry_run: bool,
 
     scheduled_time: None = sofort veröffentlichen
                     datetime = scheduled_publish_time im Publish-Schritt
+    product_id: Optional – wenn vorhanden, wird das Produkt im Reel getaggt
     """
     file_size = video_path.stat().st_size
 
     if dry_run:
         when = scheduled_time.strftime("%d.%m.%Y %H:%M") if scheduled_time else "sofort"
         print(f"    [dry-run] Instagram Reel: {video_path.name} ({file_size // 1024} KB) → {when}")
+        if product_id and META_CATALOG_ID:
+            print(f"    🏷️  [DRYRUN] Würde Produkt {product_id} an Reel taggen (Katalog: {META_CATALOG_ID})")
         return {"status": "simulated"}
 
     # ── Phase 1: Container erstellen ─────────────────────────────────────────
     container_url = f"https://graph.facebook.com/{META_VERSION}/{IG_ACCT_ID}/media"
-    c_resp = requests.post(container_url, params={
+    container_params = {
         "media_type":    "REELS",
         "upload_type":   "resumable",
         "caption":       caption,
         "share_to_feed": "true",
         "access_token":  META_TOKEN,
-    }, timeout=30)
+    }
+
+    # Product Tags hinzufügen (falls Produkt-ID und Katalog-ID vorhanden)
+    if product_id and META_CATALOG_ID:
+        container_params["product_tags"] = json.dumps([{"product_id": product_id}])
+
+    c_resp = requests.post(container_url, params=container_params, timeout=30)
 
     if c_resp.status_code != 200:
-        print(f"    ✗ IG Reel Container Fehler {c_resp.status_code}: {c_resp.text[:200]}")
-        return {"status": "error", "phase": "container", "error": c_resp.text[:500]}
+        # Product Tagging fehlgeschlagen? Retry ohne Tags
+        if product_id and META_CATALOG_ID:
+            print(f"    ⚠️  Product Tagging fehlgeschlagen ({c_resp.status_code}): {c_resp.text[:150]} — Post ohne Tagging")
+            # Retry ohne product_tags Parameter
+            container_params = {
+                "media_type":    "REELS",
+                "upload_type":   "resumable",
+                "caption":       caption,
+                "share_to_feed": "true",
+                "access_token":  META_TOKEN,
+            }
+            c_resp = requests.post(container_url, params=container_params, timeout=30)
+            if c_resp.status_code != 200:
+                print(f"    ✗ IG Reel Container Fehler {c_resp.status_code}: {c_resp.text[:200]}")
+                return {"status": "error", "phase": "container", "error": c_resp.text[:500]}
+        else:
+            print(f"    ✗ IG Reel Container Fehler {c_resp.status_code}: {c_resp.text[:200]}")
+            return {"status": "error", "phase": "container", "error": c_resp.text[:500]}
 
     c_data        = c_resp.json()
     container_id  = c_data.get("id")
@@ -502,6 +730,10 @@ def _ig_reel_upload(video_path: Path, caption: str, dry_run: bool,
     if not container_id or not upload_url:
         print(f"    ✗ IG Reel: Keine id/uri in Container-Antwort: {c_data}")
         return {"status": "error", "phase": "container", "error": str(c_data)}
+
+    # Product Tagging erfolgreich
+    if product_id and META_CATALOG_ID:
+        print(f"    ✓ Product {product_id} getaggt")
 
     print(f"    ↑ IG Reel Phase 1 OK – container_id={container_id}")
 
@@ -591,10 +823,12 @@ def main():
     print("[Step 11 – Meta Video Post] wird gestartet...")
 
     # ── Tagesordner + master-listings.json laden (VOR allen Early-Exits) ─────
-    # Die drei Content-CSVs (etsy, facebook, stockportal) werden hier ganz am
+    # facebook-listing.csv und stockportal-listing.csv werden hier ganz am
     # Anfang geschrieben, damit sie auch dann entstehen, wenn der Meta-Post
     # selbst uebersprungen wird (META_ACCESS_TOKEN fehlt, meta deaktiviert,
-    # keine video_entries).
+    # keine video_entries). etsy-listing.csv wird vom Listings-Gate (in
+    # Start_Scripts.py nach Step_09) geschrieben und persistiert product_link
+    # und promo_code aus Excel-Benutzereingaben.
     day_folder = get_day_folder(str(IMAGES_PATH), DATE_FORMAT, cfg["TARGET_DATE"])
     master_items: list = []
     if not day_folder.exists():
@@ -609,8 +843,10 @@ def main():
             print("   CSV-Erzeugung wird uebersprungen.")
         else:
             print(f"\n📋 Schreibe Content-CSVs aus master-listings.json ({len(master_items)} Item(s))...")
-            write_etsy_listing_csv(day_folder, master_items)
-            write_facebook_listing_csv(day_folder, master_items)
+            fb_csv_path = write_facebook_listing_csv(day_folder, master_items)
+            # GitHub-Upload der kompletten Monatsdatei (neu ab 2026-04-27).
+            # Idempotent (Replace-via-SHA), Dry-Run-Hebel: dry_run.meta.
+            upload_facebook_listing_to_github(fb_csv_path, dryrun=DRYRUN)
             write_stockportal_listing_csv(day_folder, master_items)
             print()
 
@@ -714,7 +950,9 @@ def main():
         # Instagram Reel
         if POST_IG and IG_ACCT_ID:
             print(f"\n   📷 Instagram Reel...")
-            ig_result = _ig_reel_upload(video_path, caption, DRYRUN, scheduled_time)
+            # Product-ID aus master-Item extrahieren (für Tagging)
+            product_id = master_item.get("id", "") if master_item else ""
+            ig_result = _ig_reel_upload(video_path, caption, DRYRUN, scheduled_time, product_id=product_id)
             entry_result["ig"] = ig_result
             if ig_result.get("status") == "error":
                 print(f"   ⚠️  Instagram fehlgeschlagen.")

@@ -40,6 +40,7 @@ from config_loader import (
     load_master_listings,
     save_master_listings,
     find_master_item,
+    atomic_write_json,
 )
 
 # === CONFIG ===
@@ -65,13 +66,9 @@ CROSSFADE_DURATION = float(config.get("video_crossfade_duration", 0.3))
 
 
 # === HELPERS ===
-def atomic_write_json(path: Path, data) -> None:
-    """Schreibt JSON-Daten atomar (mit Temp-Datei)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(path)
+# Hinweis: `atomic_write_json` wird aus `config_loader` importiert (oben).
+# Gehärtete Variante mit Retry/Backoff gegen Windows-Dateilocks — keine lokale
+# Kopie mehr. Migration 2026-04-20 (session-log-2026-04-20-d.md).
 
 
 def load_pending_json() -> list:
@@ -180,8 +177,8 @@ def generate_music_musicgen(prompt: str, duration: float, dryrun: bool = False) 
 
 
 def get_png_files(folder: Path) -> list:
-    """Gibt alle PNG-Dateien in einem Ordner zurück."""
-    return sorted([f for f in folder.iterdir() if f.is_file() and f.suffix.lower() == ".png"])
+    """Gibt alle PNG und JPG Dateien in einem Ordner zurück."""
+    return sorted([f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg"}])
 
 
 # === MAIN ===
@@ -206,7 +203,15 @@ def main():
         print("   Bitte zuerst Step 03 (Marketing Ordner) ausführen.")
         sys.exit(1)
 
-    # Alle <FolderName>/Mockups/ Verzeichnisse im Tagesordner finden
+    # --- DRY-RUN (vor der Dateiprüfung, damit kein Abbruch bei fehlenden Ordnern) ---
+    if DRYRUN:
+        print("\n🧪 DRY-RUN – keine echte Musik-Generierung.")
+        print("   (Dateiprüfung übersprungen – keine echten Mockup-Ordner nötig)")
+        print(f"\n{'='*52}")
+        print("🧪 DRY-RUN abgeschlossen.")
+        return
+
+    # Alle <FolderName>/Mockups/ Verzeichnisse im Tagesordner finden (nur im echten Modus nötig)
     subdirs = sorted([
         d / "Mockups"
         for d in day_folder.iterdir()
@@ -215,18 +220,19 @@ def main():
 
     if not subdirs:
         print(f"❌ Keine <FolderName>/Mockups/ Unterordner in {day_folder} gefunden.")
-        print("   Erwartet wird: Tagesordner/<FolderName>/Mockups/<PNG-Dateien>")
+        print("   Erwartet wird: Tagesordner/<FolderName>/Mockups/<Bild-Dateien (PNG/JPG/JPEG)>")
+        print("   Bitte zuerst Step 05 (Bilder umbenennen) ausführen.")
         sys.exit(1)
 
     print(f"\n📁 {len(subdirs)} Folder-Unterordner gefunden:")
     for d in subdirs:
-        pngs = get_png_files(d)
-        n_pngs = len(pngs)
-        if n_pngs > 0:
-            duration = (DURATION_PER_IMAGE * n_pngs) - (CROSSFADE_DURATION * (n_pngs - 1))
-            print(f"   • {d.parent.name}/Mockups: {n_pngs} PNG(s) → {duration:.1f}s Video")
+        imgs = get_png_files(d)
+        n_imgs = len(imgs)
+        if n_imgs > 0:
+            duration = (DURATION_PER_IMAGE * n_imgs) - (CROSSFADE_DURATION * (n_imgs - 1))
+            print(f"   • {d.parent.name}/Mockups: {n_imgs} Bild(er) → {duration:.1f}s Video")
         else:
-            print(f"   • {d.parent.name}/Mockups: 0 PNG(s) (wird übersprungen)")
+            print(f"   • {d.parent.name}/Mockups: 0 Bild(er) (wird übersprungen)")
 
     music_created = []
     any_failed    = False
@@ -238,7 +244,7 @@ def main():
         png_files = get_png_files(subdir)
 
         if len(png_files) == 0:
-            print(f"   ⚠️  Keine PNG-Dateien – übersprungen.")
+            print(f"   ⚠️  Keine Bild-Dateien (PNG/JPG/JPEG) – übersprungen.")
             continue
 
         # Video-Dauer berechnen
@@ -255,11 +261,6 @@ def main():
         safe_name = "".join(c for c in folder_name if c.isalnum() or c in " _-").strip().replace(" ", "_")
         output_name = f"{safe_name}_music.wav"
         output_path = subdir / output_name
-
-        if DRYRUN:
-            print(f"   🧪 DRY-RUN: Würde Musik generieren → {output_name}")
-            music_created.append(str(output_path))
-            continue
 
         # Musik generieren
         try:
@@ -284,11 +285,6 @@ def main():
             sys.exit(1)
 
     print(f"\n{'='*52}")
-    if DRYRUN:
-        print(f"🧪 DRY-RUN abgeschlossen.")
-        print(f"{'='*52}")
-        return
-
     print(f"🎯 Step 07a abgeschlossen: {len(music_created)} Musik-Datei(en) generiert.")
     for m in music_created:
         print(f"   🎵 {Path(m).name}")
@@ -337,12 +333,18 @@ def main():
                             if item:
                                 item["music_path"] = matching[0]
                                 master_updated = True
+                    else:
+                        # B1 FIX (2026-04-15): Status UNCONDITIONAL setzen
+                        # Auch wenn kein matching gefunden — Eintrag hat video_done Status,
+                        # muss mindestens auf music_done aktualisiert werden (Laufzeit-SSoT)
+                        entry["status"] = music_done_status
+                        status_updated = True
 
         if status_updated:
             atomic_write_json(PENDING_FILE, pending)
             print(f"\n💾 Status auf '{music_done_status}' gesetzt.")
         else:
-            print(f"\nℹ️  Keine passenden Einträge für Statusänderung gefunden.")
+            print(f"\nℹ️  Keine Einträge mit Status '{video_done_status}' gefunden.")
 
         # Persistiere master-listings.json wenn aktualisiert
         if master and master_updated:
