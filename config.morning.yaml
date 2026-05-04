@@ -1,0 +1,173 @@
+﻿# MORNING-Config: Morgen-Block (automatische Phase Step 07a-11)
+# Wird via: python Start_Scripts.py --morning [--target-date=YYYY-MM-DD]
+# automatisch via Windows Task Scheduler (z.B. 03:40 Berlin) gestartet.
+#
+# Ablauf:
+#   Step 07a → Musik generieren (MusicGen)
+#   Step 07  → Video erstellen (FFmpeg)
+#   Step 08  → YouTube Upload
+#   Step 09  → Filter & Upscaling + GitHub
+#   Listings-Gate (etsy-listing.csv)
+#   Step 10  → Etsy Listing API
+#   Step 11  → Meta Video Post (FB + IG)
+#   End-of-Pipeline-Hook (öffnet payhip + stockportal CSVs in Excel)
+#
+# Pre-Flight-Check (in Start_Scripts.py vor erstem Step) verifiziert,
+# dass der Vorabend-Block sauber durch ist:
+#   (a) <day_folder> existiert
+#   (b) REVIEW_PENDING.lock ist ABWESEND
+#   (c) master-listings.json enthält ≥1 Item mit Status ≠ "nolist"
+#   (d) alle nicht-nolist-Listings haben in prompts_pending.json Status "Renamed" oder höher
+#   (e) für jedes nicht-nolist-Listing existiert <listing>/Mockups/ mit ≥1 Bild
+#
+# Bei Veto: sys.exit(2) (Windows Task Scheduler "Last Result" = 2).
+
+atta_prompt_file: atta_notion_pipeline_system_prompt.txt
+base_path: C:/Companies/DPS/01 Python Skript
+canva_mockup_design_ids:
+- DAHGqKShdVU
+chat_temperature: 0.3
+claude_chat_model: claude-haiku-4-5-20251001
+claude_model: claude-sonnet-4-6
+claude_model_csv: claude-haiku-4-5-20251001
+clear_pending: true
+config_file: config.morning.yaml
+counts_pattern: '{component}_counts.json'
+date_format: '%Y-%m-%d'
+done_max_age_days: 60
+dry_run: null
+dry_run_global: false
+dummy_file_count: 2
+etsy_currency_code: EUR
+etsy_listing_state: draft
+etsy_max_tags: 13
+etsy_price: 2.99
+etsy_quantity: 999
+etsy_shop_id: ''
+etsy_taxonomy_id: 2078
+etsy_when_made: made_to_order
+etsy_who_made: i_did
+ffmpeg_path: ''
+github_branch: main
+github_mockup_folder: mockups
+github_repo: Susderk/mockup-uploads
+github_repo_originals: Susderk/original-uploads
+height: 704
+hook:
+  bar_opacity: 0.6
+  bar_padding_px: 15
+  font_name: Kristen ITC
+  font_size: 64
+  font_style: Bold
+  position: top
+  text_margin_px: 100
+hooks_file: hooks.json
+image_count: 10
+image_extensions:
+- .jpg
+- .jpeg
+images_path: C:/Companies/DPS/Generated pics
+json_dir: JSON Dateien
+knorko_prompt_file: knorko_pipeline_system_prompt.txt
+leonardo_prompt_enhance: 'OFF'
+leonardo_v2_seed: null
+leonardo_v2_style_ids: []
+lists_file: lists.json
+log_file: log.jsonl
+logging_ein: false
+meta_catalog_id: null  # deaktiviert 2026-05-04 — reaktivieren wenn IG-Shopping relevant
+meta_post_times:
+- '12:00'
+- '18:00'
+meta_video_post_fb: true
+meta_video_post_ig: true
+model_id: gpt-image-2
+music_fallback_prompt: cinematic, atmospheric, ambient background music
+music_model: facebook/musicgen-small
+music_style_prefix: cinematic, atmospheric, ambient
+negative_lists_file: negative_lists.json
+negative_prompt: no text, no numbers, no logos, no watermarks, no realistic faces
+
+# Morgen-Block: etsy-listing.csv im Listings-Gate öffnen NEIN (Pipeline läuft
+# unbeaufsichtigt; product_link/promo_code wurden vor dem Morgen-Lauf manuell
+# eingetragen — siehe TASKSCHEDULER_SETUP.md "Listings-Gate-Vorbereitung").
+# Aber: payhip + stockportal CSVs am Ende öffnen JA — Ingo soll sie
+# vorfinden, wenn er aufsteht.
+open_etsy_csv_at_gate: true
+open_payhip_and_stockportal_at_end: true
+
+openai_chat_model: gpt-4o-mini
+pending_file: prompts_pending.json
+poll_delay_sec: 2
+poll_initial_delay_sec: 8
+poll_max_attempts: 30
+product_types:
+  notion_theme: 2
+  wallpaper: 2
+promo_texts:
+- '✨ Limited offer for the first 50 buyers only: Use code {code} at checkout and get
+  50% off – exclusively available on Etsy!'
+- 🎁 First 50 buyers get 50% off! Grab yours on Etsy with code {code} – only available
+  through Etsy!
+- '💥 Exclusive Etsy deal: First 50 buyers save 50% with code {code} at checkout –
+  don''t miss out!'
+prompt_count: 2
+prompt_suffix: "Designed as a desktop wallpaper. Wide panoramic composition with visual breathing room, no central focal point that would be obscured by desktop icons. Immersive, atmospheric depth."
+prompt_provider: claude
+prompts_dir: prompts
+realesrgan_model: C:/Companies/DPS/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
+realesrgan_path: C:/Companies/DPS/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
+
+# === MORGEN-BLOCK: Step 07a bis Step 11 ===
+run_scripts:
+- music
+- video
+- youtube
+- upscale
+- etsy
+- meta
+
+shop_cta: Buy here 👉 digipicshopdesigns.etsy.com | payhip.com/digipicshop
+staging_isolation: false
+statuses:
+  all_done: All Done
+  csv_generated: CSV generated
+  etsy_listed: Etsy Listed
+  knorko_done: Notion Theme Done
+  marketing_done: Marketing Done
+  meta_posted: Meta Posted
+  music_done: Music Done
+  prompt_generated: Prompt Generated
+  renamed: Renamed
+  simulation: Simulation
+  upscaled: Upscaled
+  video_done: Video Done
+  youtube_done: YouTube Done
+themes_file: themes.json
+upscale_factor: 4
+video_crossfade_duration: 0.3
+video_duration_per_image: 1.5
+video_fps: 30
+video_height: 1920
+video_hook_keyword: -hook
+video_output_format: mp4
+video_width: 1080
+width: 1280
+youtube_add_shorts_tag: true
+youtube_base_tags:
+- AI Wallpaper
+- Desktop Background
+- 4K Wallpaper
+- Digital Art
+- AI Art
+- Aesthetic Wallpaper
+- Home Office Design
+- Wallpaper Design
+- Digital Wallpaper
+- AI Generated Art
+youtube_category_id: 24
+youtube_credentials_file: credentials.json
+youtube_language: en
+youtube_privacy: public
+youtube_schedule_time: '16:00'
+youtube_token_file: youtube_token.json

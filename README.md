@@ -1,4 +1,4 @@
-# Pipeline – AI-generierte Bilder bis zum Shop
+﻿# Pipeline – AI-generierte Bilder bis zum Shop
 
 Dieses Verzeichnis enthält alle Skripte für die Workflow-Pipeline:
 **KI-generierte Bilder (Leonardo) → Upscaling → Marketing → YouTube/Etsy/Meta**.
@@ -89,7 +89,7 @@ Falls der Temp-Ordner manuell bereinigt werden muss:
 
 ### 1. Test-Lauf starten
 ```powershell
-cd C:\Users\ingos\Digital Pictures Shops\01 Python Skript\pipeline
+cd C:\Companies\DPS\01 Python Skript\pipeline
 python Start_Scripts.py --staging
 ```
 
@@ -116,7 +116,7 @@ Nach Freigabe: Diesen Workflow erneut starten.
 
 **Genehmigung erteilen:**
 ```powershell
-cd C:\Users\ingos\Digital Pictures Shops\01 Python Skript\pipeline
+cd C:\Companies\DPS\01 Python Skript\pipeline
 .\approve_for_prod.bat
 ```
 

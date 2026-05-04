@@ -1,0 +1,168 @@
+﻿# EVENING-Config: Vorabend-Block (manuelle Phase Step 01-06)
+# Wird via: python Start_Scripts.py --evening [--target-date=YYYY-MM-DD]
+# bzw. via Start_Evening.bat / Start_Evening_GUI.py aktiviert.
+#
+# Ablauf:
+#   Step 01 → Prompts & Tagesordner
+#   Step 01b → Notion Theme (Knorko, optional je nach product_types)
+#   Step 02 → Marketing CSV + Plattform-Listings
+#   Step 03 → Marketing Ordner
+#   Step 04 → Bilder generieren (Leonardo)
+#   Step 05 → Bilder umbenennen + Originale zu GitHub hochladen
+#   Step 06 → Sichtkontrolle (Lock-Datei → Cowork-Mockup-Task → ENTER → Lock löschen)
+#
+# Endet sauber an REVIEW_PENDING.lock (Lock-Datei vom Nutzer manuell zu löschen
+# nach Cowork-Mockup-Task; ENTER-Pause schließt Step 06 ab).
+
+atta_prompt_file: atta_notion_pipeline_system_prompt.txt
+base_path: C:/Companies/DPS/01 Python Skript
+canva_mockup_design_ids:
+- DAHGqKShdVU
+chat_temperature: 0.3
+claude_chat_model: claude-haiku-4-5-20251001
+claude_model: claude-sonnet-4-6
+claude_model_csv: claude-haiku-4-5-20251001
+clear_pending: true
+config_file: config.evening.yaml
+counts_pattern: '{component}_counts.json'
+date_format: '%Y-%m-%d'
+done_max_age_days: 60
+dry_run: null
+dry_run_global: false
+dummy_file_count: 2
+etsy_currency_code: EUR
+etsy_listing_state: draft
+etsy_max_tags: 13
+etsy_price: 2.99
+etsy_quantity: 999
+etsy_shop_id: ''
+etsy_taxonomy_id: 2078
+etsy_when_made: made_to_order
+etsy_who_made: i_did
+ffmpeg_path: ''
+github_branch: main
+github_mockup_folder: mockups
+github_repo: Susderk/mockup-uploads
+github_repo_originals: Susderk/original-uploads
+height: 704
+hook:
+  bar_opacity: 0.6
+  bar_padding_px: 15
+  font_name: Kristen ITC
+  font_size: 64
+  font_style: Bold
+  position: top
+  text_margin_px: 100
+hooks_file: hooks.json
+image_count: 7
+image_extensions:
+- .jpg
+- .jpeg
+images_path: C:/Companies/DPS/Generated pics
+json_dir: JSON Dateien
+knorko_prompt_file: knorko_pipeline_system_prompt.txt
+leonardo_prompt_enhance: 'OFF'
+leonardo_v2_seed: null
+leonardo_v2_style_ids: []
+lists_file: lists.json
+log_file: log.jsonl
+logging_ein: false
+meta_catalog_id: null  # deaktiviert 2026-05-04 — reaktivieren wenn IG-Shopping relevant
+meta_post_times:
+- '12:00'
+- '18:00'
+meta_video_post_fb: true
+meta_video_post_ig: true
+model_id: gpt-image-2
+music_fallback_prompt: cinematic, atmospheric, ambient background music
+music_model: facebook/musicgen-small
+music_style_prefix: cinematic, atmospheric, ambient
+negative_lists_file: negative_lists.json
+negative_prompt: no text, no numbers, no logos, no watermarks, no realistic faces
+
+etsy_ai_disclosure: true
+
+# Vorabend schließt mit dem Sichtkontroll-Tool, NICHT mit Excel-CSVs.
+# Beide Excel-Open-Keys auf false setzen — das ist Sache des Morgen-Blocks.
+open_etsy_csv_at_gate: false
+open_payhip_and_stockportal_at_end: false
+
+openai_chat_model: gpt-4o-mini
+pending_file: prompts_pending.json
+poll_delay_sec: 2
+poll_initial_delay_sec: 8
+poll_max_attempts: 30
+product_types:
+  notion_theme: 0
+  wallpaper: 2
+  coloring_page: 0
+  clip_art: 0
+promo_texts:
+- '✨ Limited offer for the first 50 buyers only: Use code {code} at checkout and get
+  50% off – exclusively available on Etsy!'
+- 🎁 First 50 buyers get 50% off! Grab yours on Etsy with code {code} – only available
+  through Etsy!
+- '💥 Exclusive Etsy deal: First 50 buyers save 50% with code {code} at checkout –
+  don''t miss out!'
+prompt_count: 2
+prompt_suffix: "Designed as a desktop wallpaper. Wide panoramic composition with visual breathing room, no central focal point that would be obscured by desktop icons. Immersive, atmospheric depth."
+prompt_provider: claude
+prompts_dir: prompts
+realesrgan_model: C:/Companies/DPS/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
+realesrgan_path: C:/Companies/DPS/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
+
+# === VORABEND-BLOCK: Step 01 bis Step 06 ===
+run_scripts:
+- prompts
+- knorko
+- csv
+- marketing
+- images
+- rename
+- review
+
+shop_cta: Buy here 👉 digipicshopdesigns.etsy.com | payhip.com/digipicshop
+staging_isolation: false
+statuses:
+  all_done: All Done
+  csv_generated: CSV generated
+  etsy_listed: Etsy Listed
+  knorko_done: Notion Theme Done
+  marketing_done: Marketing Done
+  meta_posted: Meta Posted
+  music_done: Music Done
+  prompt_generated: Prompt Generated
+  renamed: Renamed
+  simulation: Simulation
+  upscaled: Upscaled
+  video_done: Video Done
+  youtube_done: YouTube Done
+themes_file: themes.json
+upscale_factor: 4
+video_crossfade_duration: 0.3
+video_duration_per_image: 1.5
+video_fps: 30
+video_height: 1920
+video_hook_keyword: -hook
+video_output_format: mp4
+video_width: 1080
+width: 1280
+youtube_add_shorts_tag: true
+youtube_base_tags:
+- AI Wallpaper
+- Desktop Background
+- 4K Wallpaper
+- Digital Art
+- AI Art
+- Aesthetic Wallpaper
+- Home Office Design
+- Wallpaper Design
+- Digital Wallpaper
+- AI Generated Art
+youtube_category_id: 24
+youtube_credentials_file: credentials.json
+youtube_language: en
+youtube_privacy: public
+youtube_schedule_time: '16:00'
+youtube_token_file: youtube_token.json
+staging_isolation: false
