@@ -1,8 +1,8 @@
-# STAGING-Config: Nur für Test-Läufe. Nicht für Produktion.
+﻿# STAGING-Config: Nur für Test-Läufe. Nicht für Produktion.
 # Alle API-Calls und irreversiblen Operationen werden simuliert.
 
 atta_prompt_file: atta_notion_pipeline_system_prompt.txt
-base_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript
+base_path: C:/Companies/DPS/01 Python Skript
 canva_mockup_design_ids:
 - DAHDkEN1iUo
 - DAHDkNb5G1c
@@ -26,13 +26,17 @@ dry_run:
   etsy: true         # kein Listing
   meta: true         # kein Post
   upscale: false     # RealESRGAN läuft lokal
-  music: false       # MusicGen läuft lokal
+  music: true        # MusicGen läuft lokal
+  video: true        # keine Bilder → kein Video möglich
   csv: false         # CSV-Generierung vollständig
 
 dry_run_global: false
 dummy_file_count: 2
 etsy_currency_code: EUR
 etsy_listing_state: draft
+etsy_max_file_bytes: 20971520
+etsy_max_image_bytes: 10485760
+etsy_max_listing_files: 5
 etsy_max_tags: 13
 etsy_price: 3.99
 etsy_quantity: 999
@@ -44,7 +48,8 @@ ffmpeg_path: ''
 github_branch: main
 github_mockup_folder: mockups
 github_repo: Susderk/mockup-uploads
-github_wallpaper_folder: wallpapers
+github_repo_facebook_listings: Susderk/facebook-listings
+github_repo_originals: Susderk/original-uploads
 height: 704
 hook:
   bar_opacity: 0.6
@@ -59,26 +64,29 @@ image_count: 10
 image_extensions:
 - .jpg
 - .jpeg
-images_path: C:/Users/ingos/Digital Pictures Shops/Generated pics
+images_path: C:/Companies/DPS/Generated pics
 json_dir: JSON Dateien
 knorko_prompt_file: knorko_pipeline_system_prompt.txt
+leonardo_prompt_enhance: 'OFF'
+leonardo_v2_seed: null
+leonardo_v2_style_ids: []
 lists_file: lists.json
 log_file: log.jsonl
 logging_ein: false
+meta_catalog_id: '1487920626454273'
 meta_post_times:
 - '12:00'
 - '18:00'
 meta_video_post_fb: true
 meta_video_post_ig: true
-model_id: b2614463-296c-462a-9586-aafdb8f00e36
+model_id: gpt-image-2
 music_fallback_prompt: cinematic, atmospheric, ambient background music
 music_model: facebook/musicgen-small
 music_style_prefix: cinematic, atmospheric, ambient
 negative_lists_file: negative_lists.json
 negative_prompt: no text, no numbers, no logos, no watermarks, no realistic faces
-open_canva_csv_at_review: false
-open_payhip_csv_at_approval: false
-open_etsy_and_stockportal_at_end: false
+open_etsy_csv_at_gate: false
+open_payhip_and_stockportal_at_end: false
 openai_chat_model: gpt-4o-mini
 
 # === STAGING: Fixture statt echte Datei ===
@@ -99,18 +107,19 @@ product_types:
   wallpaper: 2
 promo_texts:
 - '✨ Limited offer for the first 50 buyers only: Use code {code} at checkout and get
-  90% off – exclusively available on Payhip!'
-- 🎁 First 50 buyers get 90% off! Grab yours on Payhip with code {code} – only available
-  through Payhip!
-- '💥 Exclusive Payhip deal: First 50 buyers save 90% with code {code} at checkout
+  90% off – exclusively available on Etsy!'
+- 🎁 First 50 buyers get 90% off! Grab yours on Etsy with code {code} – only available
+  through Etsy!
+- '💥 Exclusive Etsy deal: First 50 buyers save 90% with code {code} at checkout
   – don''t miss out!'
 prompt_count: 2
+prompt_suffix: "Designed as a desktop wallpaper. Wide panoramic composition with visual breathing room, no central focal point that would be obscured by desktop icons. Immersive, atmospheric depth."
 prompt_provider: claude
 prompts_dir: prompts
 
 # === STAGING: Alle Steps aktivieren ===
-realesrgan_model: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
-realesrgan_path: C:/Users/ingos/Digital Pictures Shops/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
+realesrgan_model: C:/Companies/DPS/01 Python Skript/RealESRGAN/models/realesrgan-x4plus
+realesrgan_path: C:/Companies/DPS/01 Python Skript/RealESRGAN/realesrgan-ncnn-vulkan.exe
 run_scripts:
 - csv
 - marketing
@@ -125,7 +134,7 @@ run_scripts:
 - meta
 - knorko
 
-shop_cta: Buy here 👉 payhip.com/digipicshop | etsy.com/shop/digipicshopdesigns
+shop_cta: Buy here 👉 digipicshopdesigns.etsy.com | payhip.com/digipicshop
 statuses:
   all_done: All Done
   csv_generated: CSV generated
@@ -168,3 +177,5 @@ youtube_language: en
 youtube_privacy: public
 youtube_schedule_time: '16:00'
 youtube_token_file: youtube_token.json
+ken_burns: true
+ken_burns_intensity: 0.002

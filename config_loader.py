@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 config_loader.py
@@ -11,6 +11,7 @@ Zentrale Loader-Funktion:
 
 import sys
 import os
+import time
 import yaml   # PyYAML wird benötigt: pip install pyyaml
 import json
 import tempfile
@@ -53,17 +54,31 @@ def load_config():
     # === SETTINGS ===
     DATE_FORMAT = config.get("date_format", "%Y-%m-%d")
 
-    # Zieldatum: leer = heute
-    target_date_str = str(config.get("target_date", "") or "").strip()
-    if target_date_str:
+    # Zieldatum: Priorität (höchste zuerst):
+    #   1. Env-Variable PIPELINE_TARGET_DATE (vom Start_Scripts.py --target-date=YYYY-MM-DD gesetzt)
+    #   2. config-Key target_date
+    #   3. Fallback: datetime.today()
+    # Env-Variable hat Vorrang, damit ein einziger CLI-Flag konsistent
+    # über alle config_loader-Aufrufe in jedem Step wirkt (inkl. abgeleitete Pfade).
+    env_target_date = os.environ.get("PIPELINE_TARGET_DATE", "").strip()
+    if env_target_date:
         try:
-            TARGET_DATE = datetime.strptime(target_date_str, DATE_FORMAT)
-            print(f"📅 Zieldatum aus config.yaml: {target_date_str}")
+            TARGET_DATE = datetime.strptime(env_target_date, DATE_FORMAT)
+            print(f"📅 Zieldatum aus PIPELINE_TARGET_DATE: {env_target_date}")
         except ValueError:
-            print(f"❌ Ungültiges Datum 'target_date': '{target_date_str}' (erwartet: {DATE_FORMAT})")
+            print(f"❌ Ungültiges Datum in PIPELINE_TARGET_DATE: '{env_target_date}' (erwartet: {DATE_FORMAT})")
             sys.exit(1)
     else:
-        TARGET_DATE = datetime.today()
+        target_date_str = str(config.get("target_date", "") or "").strip()
+        if target_date_str:
+            try:
+                TARGET_DATE = datetime.strptime(target_date_str, DATE_FORMAT)
+                print(f"📅 Zieldatum aus config.yaml: {target_date_str}")
+            except ValueError:
+                print(f"❌ Ungültiges Datum 'target_date': '{target_date_str}' (erwartet: {DATE_FORMAT})")
+                sys.exit(1)
+        else:
+            TARGET_DATE = datetime.today()
     STATUSES    = config.get("statuses", {})
     BASE_PATH   = Path(config.get("base_path", SCRIPT_PATH))
     IMAGES_PATH = Path(config.get("images_path", BASE_PATH / "images"))
@@ -276,13 +291,70 @@ def update_master_item(day_folder, item_id: str, updates: dict) -> bool:
     return True
 
 
-def atomic_write_json(path, data) -> None:
-    """Schreibt JSON atomar (via Temp-Datei) um Datenverlust bei Abbruch zu vermeiden."""
+def atomic_write_json(path, data, max_retries: int = 3) -> None:
+    """
+    Schreibt JSON atomar (via Temp-Datei) um Datenverlust bei Abbruch zu vermeiden.
+    Retry-Mechanismus bei Dateilock-Fehlern (Windows) — Schutz für Schreiben UND Replace.
+
+    Args:
+        path: Ziel-Pfad
+        data: Zu schreibende Dict
+        max_retries: Anzahl der Retry-Versuche bei Fehler (default: 3)
+
+    Raises:
+        OSError/PermissionError: Wenn auch nach max_retries nicht geschrieben werden kann.
+        Bei finaler Exception: Temp-Datei wird aufgeräumt.
+    """
     path = Path(path)
     tmp = path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(path)
+
+    for attempt in range(max_retries):
+        try:
+            # Phase 1a: JSON-Serialisierung VOR open — Encoding-Fehler werden sichtbar,
+            # BEVOR die Temp-Datei angefasst wird. Strukturell symmetrisch zu
+            # publisher/atomic_io.atomic_write_json (Z.61–73).
+            payload = json.dumps(data, indent=2, ensure_ascii=False)
+            # Phase 1b: Write + flush + fsync — garantiert User-Buffer → Kernel → Disk,
+            # bevor der `with`-Block schließt und `tmp.replace(path)` feuert.
+            # Ohne fsync kann Windows bei Stream-Close-Störung (OneDrive-Lock, AV-Scan,
+            # Laptop-Schlafmodus) eine partial-flushed Tmp an os.replace übergeben und
+            # damit ein valides Target mit partial Content überschreiben.
+            # Root-Cause der master-listings.json-Truncation #4 (2026-04-22 + 2026-04-23).
+            # Siehe Indi-Diagnose `Indi/_sessions/session-log-2026-04-23.md` und den
+            # publisher-Writer als Referenz-Implementation.
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Phase 2: Temp auf Original ersetzen (atomar auf POSIX, Best-Effort auf Windows)
+            # Diese Phase ist auch unter Dateilock-Fehlern anfällig und wird daher retried
+            tmp.replace(path)
+            return  # Erfolg
+
+        except (OSError, PermissionError) as e:
+            # Dateilock, Permissionen, Antivirus-Scans, Excel-Zweitprozesse, etc.
+            if attempt < max_retries - 1:
+                # Retry vorbereiten: Temp-Datei aufräumen (falls vorhanden) vor nächstem Versuch
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass  # Ignoriere Fehler beim Cleanup der Temp-Datei
+
+                wait_time = 0.5 * (2 ** attempt)  # exponential backoff: 0.5s, 1s, 2s, ...
+                print(f"   ⚠️  JSON-Schreiben fehlgeschlagen (Versuch {attempt+1}/{max_retries}): {e}")
+                print(f"      Warte {wait_time}s vor Retry...")
+                time.sleep(wait_time)
+            else:
+                # Finaler Versuch fehlgeschlagen — Cleanup und Exception neu werfen
+                print(f"   ❌ JSON-Schreiben nach {max_retries} Versuchen fehlgeschlagen: {e}")
+                if tmp.exists():
+                    try:
+                        tmp.unlink()  # Cleanup Temp-Datei
+                    except Exception:
+                        pass  # Ignoriere Fehler beim Cleanup
+                raise
 
 
 def remap_pending_entries_to_staging(entries: list, staging_images_path: Path) -> None:
@@ -294,7 +366,7 @@ def remap_pending_entries_to_staging(entries: list, staging_images_path: Path) -
     Modifiziert die Einträge in-place.
 
     Beispiel:
-    - Input:  "C:/Users/ingos/Digital Pictures Shops/Generated pics/2026/2026 April/2026-04-04"
+    - Input:  "C:/Companies/DPS/Generated pics/2026/2026 April/2026-04-04"
     - Output: "/tmp/pipeline_staging_YYYYMMDD_HHMMSS/Generated pics/2026/2026 April/2026-04-04"
     """
     if not entries or not isinstance(entries, list):
