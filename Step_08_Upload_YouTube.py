@@ -211,15 +211,19 @@ def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
     """
     Schreibt payhip-listing.csv im Tagesordner — eine Zeile pro frisch
     hochgeladenem master-Item. Spalten:
-      id, folder, title, youtube_url, marketing_text
+      id, folder, title, youtube_url, marketing_text,
+      payhip_product_link, promo_code
     marketing_text = etsy_description_en + "\n\n" + AI-Disclosure.
+    payhip_product_link: leer — Operator traegt nach manuellem Payhip-Upload ein.
+    promo_code: vorbelegt mit "NEWCUST50".
     """
     if not items_for_payhip:
         print("   ℹ️  Keine Items fuer payhip-listing.csv (keine erfolgreichen Uploads).")
         return
 
     csv_path = day_folder / "payhip-listing.csv"
-    fieldnames = ["id", "folder", "title", "youtube_url", "marketing_text"]
+    fieldnames = ["id", "folder", "title", "youtube_url", "marketing_text",
+                  "payhip_product_link", "promo_code"]
 
     rows = []
     for it in items_for_payhip:
@@ -231,11 +235,13 @@ def write_payhip_listing_csv(day_folder: Path, items_for_payhip: list) -> None:
         else:
             marketing_text = PAYHIP_AI_DISCLOSURE
         rows.append({
-            "id":              it.get("id", ""),
-            "folder":          it.get("folder", ""),
-            "title":           title,
-            "youtube_url":     it.get("youtube_url") or "",
-            "marketing_text":  marketing_text,
+            "id":                   it.get("id", ""),
+            "folder":               it.get("folder", ""),
+            "title":                title,
+            "youtube_url":          it.get("youtube_url") or "",
+            "marketing_text":       marketing_text,
+            "payhip_product_link":  it.get("payhip_product_link") or "",
+            "promo_code":           "NEWCUST50",
         })
 
     tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
