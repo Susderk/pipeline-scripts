@@ -623,4 +623,33 @@ def main():
         if not isinstance(pending, list):
             return
 
-        # Lade master-listi
+        # Lade master-listings.json fuer Matching
+        try:
+            master = load_master_listings(day_folder)
+        except Exception:
+            master = None
+
+        status_updated = False
+
+        for entry in pending:
+            if entry.get("status") == VIDEO_STATUS:
+                entry_id = entry.get("id", "")
+                if entry_id:
+                    # Finde matching Upload via entry_id
+                    matching_upload = None
+                    for u in uploaded:
+                        if u.get("entry_id") == entry_id:
+                            matching_upload = u
+                            break
+
+                    if matching_upload:
+                        entry["status"]      = YOUTUBE_STATUS
+                        entry["youtube_url"] = matching_upload["url"]
+                        entry["youtube_id"]  = matching_upload["video_id"]
+                        status_updated = True
+
+        if status_updated:
+            atomic_write_json(PENDING_FILE, pending)
+
+    except Exception as e:
+        print(f"\n⚠️  pending.json konnte nicht aktualisiert werden: {e}")
