@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 # Erwarte, dass load_config und get_day_folder in deiner Umgebung existieren
-from config_loader import load_config, get_day_folder
+from config_loader import load_config, get_day_folder, atomic_write_json
 
 cfg = load_config()
 config = cfg.get("config", {})
@@ -155,15 +155,11 @@ def load_json(path: Path):
         print(f"[load_json] Fehler beim Laden {path}: {e}", file=sys.stderr)
         return None
 
-def save_json(path: Path, data):
-    ensure_dir(path.parent)
-    tmp = path.with_suffix(".tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        tmp.replace(path)
-    except Exception as e:
-        print(f"[save_json] Fehler beim Speichern {path}: {e}", file=sys.stderr)
+# Hinweis: `save_json` existierte als lokale, ungehärtete Variante (kein Retry,
+# kein Replace-Schutz, Silent-Swallow via print). Call-Sites nutzen jetzt direkt
+# `atomic_write_json` aus `config_loader` (oben importiert) — gehärtete Variante
+# mit Retry/Backoff gegen Windows-Dateilocks. Migration 2026-04-20
+# (session-log-2026-04-20-e.md).
 
 def clean_list(items):
     if not isinstance(items, list):
@@ -204,7 +200,7 @@ def load_counts():
     return load_json(COUNTS_FILE) or {}
 
 def save_counts(counts):
-    save_json(COUNTS_FILE, counts)
+    atomic_write_json(COUNTS_FILE, counts)
 
 # Robustes Laden der Exclusions: ignoriert fehlerhafte Datumsstrings
 def load_exclusions():
@@ -225,7 +221,7 @@ def load_exclusions():
     return cleaned
 
 def save_exclusions(exclusions: Dict[str, str]):
-    save_json(EXCLUSION_FILE, exclusions)
+    atomic_write_json(EXCLUSION_FILE, exclusions)
 
 # -----------------------
 # Gewichtete Szenenauswahl
@@ -435,7 +431,7 @@ def main():
 
     # speichern
     try:
-        save_json(Path(PENDING_FILE), pending_existing + new_entries)
+        atomic_write_json(Path(PENDING_FILE), pending_existing + new_entries)
     except Exception as e:
         print(f"[main] Fehler beim Speichern PENDING_FILE: {e}", file=sys.stderr)
 

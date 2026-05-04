@@ -22,7 +22,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
-from config_loader import load_config, get_day_folder
+from config_loader import load_config, get_day_folder, atomic_write_json
 
 # === CONFIG ===
 cfg = load_config()
@@ -52,10 +52,19 @@ POLL_DELAY_SEC    = float(config.get("poll_delay_sec", 2.0))
 INITIAL_DELAY_SEC = float(config.get("poll_initial_delay_sec", 8.0))
 
 # V2-Modelle erkennen: String-IDs (keine UUIDs)
+# Hinweis: "phoenix" ist konservativ NICHT in der V2-Whitelist - Phoenix bleibt
+# vorerst V1 mit UUID `de7d3faf-762f-48e0-b3b7-9d0ac3a3fcf3`. Falls Leonardo
+# einen V2-String-Identifier fuer Phoenix dokumentiert, separater Patch.
 _V2_MODELS = {"seedream-4.5", "seedream-4.0", "lucid-origin", "lucid-realism",
-              "nano-banana", "nano-banana-2", "nano-banana-pro",
-              "phoenix", "ideogram-3.0"}
+              "nano-banana", "nano-banana-2", "nano-banana-pro", "gpt-image-2",
+              "ideogram-3.0"}
 USE_V2 = MODEL_ID.lower() in _V2_MODELS
+
+# V2-spezifische Parameter (optional, mit Defaults siehe Leonardo-v2-Schema)
+LEONARDO_PROMPT_ENHANCE = str(config.get("leonardo_prompt_enhance", "OFF"))
+LEONARDO_V2_STYLE_IDS   = list(config.get("leonardo_v2_style_ids") or [])
+LEONARDO_V2_SEED        = config.get("leonardo_v2_seed", None)
+PROMPT_SUFFIX           = config.get("prompt_suffix", "")
 
 # API Endpoints
 _API_V1 = "https://cloud.leonardo.ai/api/rest/v1/generations"
@@ -125,15 +134,154 @@ def _download_image(img_url: str) -> bytes:
     return response.content
 
 # === HELPERS ===
-def atomic_write_json(path: Path, data) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(path)
+# Hinweis: `atomic_write_json` wird aus `config_loader` importiert (oben).
+# Gehärtete Variante mit Retry/Backoff gegen Windows-Dateilocks — keine lokale
+# Kopie mehr. Migration 2026-04-20 (session-log-2026-04-20-d.md).
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+# === V2-DIAGNOSE-LOGGING (2026-04-27, session-log step04-verbose-logging) ===
+# Zweck: Bei VALIDATION_ERROR von Leonardo soll vollstaendiges Payload + Endpoint
+# + Response-Body sichtbar sein, ohne dass der Bearer-Token im Klartext geloggt wird.
+# V1-Pfad ist nicht betroffen - Logging triggert nur bei USE_V2=True.
+
+def _redact_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
+    """Klont Headers und maskiert Authorization-Wert (Token nie im Klartext loggen)."""
+    redacted: Dict[str, Any] = {}
+    for k, v in (headers or {}).items():
+        if k.lower() == "authorization":
+            redacted[k] = "Bearer ***maskiert***"
+        else:
+            redacted[k] = v
+    return redacted
+
+def _pretty_json(obj: Any) -> str:
+    """Pretty-JSON-Dump fuer Diagnose-Output. Faellt auf str() zurueck."""
+    try:
+        return json.dumps(obj, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        return str(obj)
+
+def _extract_validation_errors(body_obj: Any) -> List[str]:
+    """Holt Leonardo-Validation-Messages aus extensions.details.errors[*].message.
+    Beispiel-Struktur (siehe BadRequestException):
+      {'extensions': {'details': {'errors': [{'message': '...'}]}}}
+    Robust gegen List/Dict-Container und fehlende Felder."""
+    msgs: List[str] = []
+    if not body_obj:
+        return msgs
+    candidates = body_obj if isinstance(body_obj, list) else [body_obj]
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        # GraphQL-Style: top-level errors[]
+        for top_err in cand.get("errors", []) or []:
+            if isinstance(top_err, dict):
+                ext = top_err.get("extensions") or {}
+                details = ext.get("details") or {}
+                inner = details.get("errors") or []
+                if isinstance(inner, list):
+                    for ie in inner:
+                        if isinstance(ie, dict) and ie.get("message"):
+                            msgs.append(str(ie["message"]))
+                if details.get("message"):
+                    msgs.append(str(details["message"]))
+                if top_err.get("message") and top_err.get("message") != "An error occurred.":
+                    msgs.append(str(top_err["message"]))
+        # Direkter Style (kein GraphQL-Wrapper)
+        ext = cand.get("extensions") or {}
+        details = ext.get("details") or {}
+        inner = details.get("errors") or []
+        if isinstance(inner, list):
+            for ie in inner:
+                if isinstance(ie, dict) and ie.get("message"):
+                    msgs.append(str(ie["message"]))
+    # Duplikate entfernen, Reihenfolge erhalten
+    seen = set()
+    deduped: List[str] = []
+    for m in msgs:
+        if m not in seen:
+            seen.add(m)
+            deduped.append(m)
+    return deduped
+
+def _log_v2_request(day_folder: Path, url: str, headers: Dict[str, Any],
+                    payload: Dict[str, Any], batch_index: int) -> None:
+    """Vor jedem V2-POST: vollstaendiges Payload + URL + maskierte Headers loggen.
+    Stdout immer, Logfile zusaetzlich wenn LOGGING_EIN=True."""
+    redacted = _redact_headers(headers)
+    print("\n=== V2-POST DIAGNOSTIC (Request) ===")
+    print(f"Batch:    {batch_index}")
+    print(f"Endpoint: {url}")
+    print(f"Headers:  {_pretty_json(redacted)}")
+    print(f"Payload:\n{_pretty_json(payload)}")
+    print("=== /V2-POST DIAGNOSTIC (Request) ===\n")
+    if LOGGING_EIN:
+        write_logfile(day_folder, "image_process", {
+            "v2_request_url":     url,
+            "v2_request_headers": redacted,
+            "v2_request_payload": payload,
+            "batch_index":        batch_index,
+        }, start=True)
+
+def _log_v2_response_ok(day_folder: Path, generation_id: str, batch_index: int) -> None:
+    """Knapper Erfolgs-Hinweis im V2-Pfad."""
+    print(f"✅ V2-POST OK | Batch {batch_index} | generationId: {generation_id}")
+    if LOGGING_EIN:
+        write_logfile(day_folder, "image_process", {
+            "v2_response_ok":  True,
+            "v2_generation_id": generation_id,
+            "batch_index":     batch_index,
+        }, start=False)
+
+def _log_v2_response_error(day_folder: Path, batch_index: int, status_code: Any,
+                           body_text: str, body_obj: Any) -> None:
+    """Bei Fehler-Response: vollstaendigen Body strukturiert loggen,
+    Validation-Messages explizit hervorheben."""
+    print("\n=== V2-POST DIAGNOSTIC (Error Response) ===")
+    print(f"Batch:       {batch_index}")
+    print(f"HTTP-Status: {status_code}")
+    if body_obj is not None:
+        print(f"Body (parsed JSON):\n{_pretty_json(body_obj)}")
+    else:
+        print(f"Body (raw):\n{body_text}")
+    val_msgs = _extract_validation_errors(body_obj)
+    if val_msgs:
+        print("\n>>> Leonardo-Validation-Messages:")
+        for m in val_msgs:
+            print(f"    - {m}")
+    print("=== /V2-POST DIAGNOSTIC (Error Response) ===\n")
+    if LOGGING_EIN:
+        write_logfile(day_folder, "image_process", {
+            "v2_response_error_status":     status_code,
+            "v2_response_error_body":       body_obj if body_obj is not None else body_text,
+            "v2_response_validation_msgs":  val_msgs,
+            "batch_index":                  batch_index,
+        }, start=False)
+
+def _post_v2_with_diag(headers: Dict[str, Any], payload: Dict[str, Any],
+                       day_folder: Path, batch_index: int) -> Dict:
+    """V2-POST-Wrapper mit Diagnose: loggt Request vorher, Response-Body bei Fehler.
+    Reicht Exception nach Logging weiter (Caller behaelt sys.exit(1)-Semantik)."""
+    _log_v2_request(day_folder, LEONARDO_API_URL, headers, payload, batch_index)
+    try:
+        post_json = _post_generation(headers, payload)
+        return post_json
+    except requests.exceptions.HTTPError as he:
+        resp = he.response
+        status_code = getattr(resp, "status_code", "?")
+        body_text   = getattr(resp, "text", "") or ""
+        body_obj: Any = None
+        try:
+            body_obj = resp.json() if resp is not None else None
+        except Exception:
+            body_obj = None
+        _log_v2_response_error(day_folder, batch_index, status_code, body_text, body_obj)
+        raise
+    except Exception:
+        # Connection/Timeout/etc. - bestehender Logging-Pfad im Caller deckt das ab.
+        raise
 
 # === LOGGING ===
 def write_logfile(day_folder: Path, logname: str, payload: Dict[str, Any], start: bool) -> None:
@@ -243,6 +391,8 @@ def generate_images(prompt: str, folder: Path, total_count: int, width: int, hei
     V1 Payload: {"modelId": "UUID", "prompt": "...", "num_images": N, "width": W, "height": H}
     V2 Payload: {"model": "string-id", "parameters": {"prompt": "...", "quantity": N, ...}}
     """
+    if PROMPT_SUFFIX:
+        prompt = f"{prompt} {PROMPT_SUFFIX}"
     all_saved = []
 
     if DRYRUN:
@@ -273,16 +423,40 @@ def generate_images(prompt: str, folder: Path, total_count: int, width: int, hei
         num = min(max_per_request, remaining)
 
         if USE_V2:
-            # V2 REST: verschachtelte parameters-Struktur (siehe docs.leonardo.ai/docs/seedream-4-5)
+            # V2 REST: top-level model/public + nested parameters
+            # (Leonardo-v2-Schema 2026-04, gpt-image-2/seedream-4.5 etc.).
+            # `public` bewusst auf False (geschaeftliche Wallpapers).
+            # `prompt_enhance` als String "OFF"/"ON", Default "OFF".
+            # `style_ids` und `seed` werden nur bei Bedarf geschrieben.
+            #
+            # gpt-image-2 Strategie A (2026-04-29): Modell-spezifische Dimension-Overrides.
+            # Die Config-Werte (width/height) sind V1-era 1280×704 und werden von
+            # gpt-image-2 mit VALIDATION_ERROR abgelehnt. Referenz-Dimensionen aus
+            # Ingos Leonardo-Webinterface: 1376×768.
+            # Zusaetzlich: gpt-image-2 akzeptiert `prompt_enhance` moeglicherweise nicht —
+            # wird fuer dieses Modell aus dem Payload weggelassen.
+            _gpt_image_2 = MODEL_ID.lower() == "gpt-image-2"
+            _v2_width  = 1376 if _gpt_image_2 else width
+            _v2_height = 768  if _gpt_image_2 else height
+
+            v2_params: Dict[str, Any] = {
+                "prompt":   prompt,
+                "quantity": 1,   # V2: always 1 per call; loop handles N images via N sequential calls
+                "width":    _v2_width,
+                "height":   _v2_height,
+            }
+            # prompt_enhance: gpt-image-2 akzeptiert diesen Parameter nicht — weglassen.
+            if not _gpt_image_2:
+                v2_params["prompt_enhance"] = LEONARDO_PROMPT_ENHANCE
+            if LEONARDO_V2_SEED is not None:
+                v2_params["seed"] = LEONARDO_V2_SEED
+            if LEONARDO_V2_STYLE_IDS:
+                v2_params["style_ids"] = LEONARDO_V2_STYLE_IDS
+
             payload = {
-                "model": MODEL_ID,
-                "parameters": {
-                    "prompt":   prompt,
-                    "quantity": num,
-                    "width":    width,
-                    "height":   height,
-                },
-                "public": False,
+                "model":      MODEL_ID,
+                "public":     False,
+                "parameters": v2_params,
             }
         else:
             payload = {
@@ -296,7 +470,26 @@ def generate_images(prompt: str, folder: Path, total_count: int, width: int, hei
         write_logfile(day_folder, "image_process", {"payload": payload, "batch_index": batch_index}, start=True)
 
         try:
-            post_json = _post_generation(headers, payload)
+            if USE_V2:
+                # V2-Pfad mit Verbose-Diagnostic-Logging (siehe _post_v2_with_diag).
+                # Loggt Endpoint + Headers (maskiert) + Payload vor jedem Call,
+                # Response-Body strukturiert bei Fehler. V1-Pfad unangetastet.
+                post_json = _post_v2_with_diag(headers, payload, day_folder, batch_index)
+                # Normalisierung: gpt-image-2 liefert {"generate": [...]} — Liste → Dict
+                if isinstance(post_json, list):
+                    post_json = post_json[0] if post_json else {}
+                _generate_raw = post_json.get("generate")
+                if isinstance(_generate_raw, list):
+                    post_json["generate"] = _generate_raw[0] if _generate_raw else {}
+                _log_v2_response_ok(day_folder, str(
+                    (post_json.get("generate") or {}).get("generationId")
+                    or (post_json.get("sdGenerationJob") or {}).get("generationId")
+                    or post_json.get("generationId")
+                    or post_json.get("id")
+                    or "?"
+                ), batch_index)
+            else:
+                post_json = _post_generation(headers, payload)
             write_logfile(day_folder, "image_process", {"post_response": post_json}, start=False)
         except Exception as e:
             print(f"❌ Request-Fehler: {e}")
@@ -307,8 +500,6 @@ def generate_images(prompt: str, folder: Path, total_count: int, width: int, hei
         # V2 GraphQL: {"generate": {"generationId": "..."}}
         # V2 REST:    {"id": "..."}  oder  [{"id": "..."}]
         # V1 REST:    {"sdGenerationJob": {"generationId": "..."}}
-        if isinstance(post_json, list):
-            post_json = post_json[0] if post_json else {}
         generate_block = post_json.get("generate") or {}
         job            = post_json.get("sdGenerationJob") or {}
         generation_id = (
@@ -326,7 +517,7 @@ def generate_images(prompt: str, folder: Path, total_count: int, width: int, hei
         batch_saved = poll_generation(generation_id, headers, folder, batch_index, day_folder)
         all_saved.extend(batch_saved)
 
-        remaining   -= num
+        remaining   -= (1 if USE_V2 else num)  # V2: 1 image per call; V1: num images per call
         batch_index += 1
 
     return all_saved
@@ -394,6 +585,10 @@ def main() -> None:
         saved_images = generate_images(prompt, folder, IMG_TOTAL, IMG_WIDTH, IMG_HEIGHT, day_folder)
 
         entry["images"] = saved_images
+        # generator = tatsaechlich verwendeter Leonardo-Modell-Identifier (UUID oder String-ID).
+        # Wird von image_review_tool.py fuer Journal-Eintraege gelesen.
+        # Gehoert in prompts_pending.json (Laufzeit-SSoT), nicht in master-listings.json.
+        entry["generator"] = MODEL_ID
         entry["status"] = all_done_status
         processed      += 1
 

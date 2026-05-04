@@ -18,7 +18,7 @@ import json
 import random
 from pathlib import Path
 
-from config_loader import load_config
+from config_loader import load_config, atomic_write_json
 
 # Config laden
 cfg = load_config()
@@ -174,14 +174,15 @@ def load_pending_json() -> dict:
 
 
 def save_pending_json(data: dict) -> None:
-    """Speichert knorko_themes.json atomar."""
-    KNORKO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    """Speichert knorko_themes.json atomar.
 
-    tmp_file = KNORKO_FILE.with_suffix(".tmp")
+    Hinweis: Nutzt die gehärtete `atomic_write_json`-Variante aus
+    `config_loader` (Retry/Backoff gegen Windows-Dateilocks). Lokale,
+    ungehärtete Kopie entfernt — Migration 2026-04-20
+    (session-log-2026-04-20-e.md).
+    """
     try:
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        tmp_file.replace(KNORKO_FILE)
+        atomic_write_json(KNORKO_FILE, data)
     except Exception as e:
         print(f"❌ Fehler beim Speichern von knorko_themes.json: {e}")
         sys.exit(1)

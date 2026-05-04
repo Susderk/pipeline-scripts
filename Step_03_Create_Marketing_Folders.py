@@ -14,7 +14,7 @@ import sys
 import json
 from pathlib import Path
 
-from config_loader import load_config
+from config_loader import load_config, atomic_write_json
 
 cfg    = load_config()
 config = cfg["config"]
@@ -30,12 +30,9 @@ RUN_ENABLED = bool(flags["run"])
 DRYRUN      = bool(flags["dry_run"])
 
 # === HELPERS ===
-def atomic_write_json(path: Path, data) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(path)
+# Hinweis: `atomic_write_json` wird aus `config_loader` importiert (oben).
+# Gehärtete Variante mit Retry/Backoff gegen Windows-Dateilocks — keine lokale
+# Kopie mehr. Migration 2026-04-20 (session-log-2026-04-20-d.md).
 
 # === MAIN ===
 def main():
